@@ -44,10 +44,8 @@ client.on('ready', () => {
 client.on('interactionCreate', async interaction => {
     //console.log(`${msg.author.username}: ${msg.content.toString()}`);
     const stringifiedObject = JSON.stringify(interaction.options, null, 2);
-    const objectifiedJson = JSON.parse(stringifiedObject)
     console.log(`Message received: ${interaction.commandName}`);
     console.log(stringifiedObject)
-    console.log(objectifiedJson._hoistedOptions[0].user.id)
     if (!interaction.guild) return;
     if (!interaction.isChatInputCommand()) return;
 
@@ -58,7 +56,11 @@ client.on('interactionCreate', async interaction => {
         await interaction.reply('Pong!');
     }
     if (interaction.commandName === 'tod') {
+        const objectifiedJson = JSON.parse(stringifiedObject)
+
         await interaction.reply(`z!spin RAMBOT E ${userMention(objectifiedJson._hoistedOptions[0].user.id)}`);
+
+        console.log(objectifiedJson._hoistedOptions[0].user.id)
     }
 });
 

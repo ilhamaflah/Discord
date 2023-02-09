@@ -1,6 +1,7 @@
 import fetch from "node-fetch";
 import * as dotenv from 'dotenv';
 import {Client, GatewayIntentBits, REST, Routes, userMention} from 'discord.js';
+import { commands } from './commands.js'
 
 dotenv.config();
 //const config = require("./config/config");
@@ -21,30 +22,6 @@ function getQuote() {
             return data[0]["q"] + " -" + data[0]["a"]
         })
 }
-
-const commands = [
-    {
-        name: 'ping',
-        description: 'Replies with Pong!',
-    },
-    {
-        name: 'tod',
-        description: 'Spin RAMBOT E someone',
-        options: [
-            {
-                name: "member",
-                description: "Who?",
-                type: 6,
-                required: true,
-
-            },
-        ]
-    },
-    {
-        name: 'inspire',
-        description: 'Get a quote',
-    },
-];
 
 const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
 

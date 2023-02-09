@@ -1,7 +1,7 @@
 import fetch from 'node-fetch';
 import * as dotenv from 'dotenv';
 import {Client, GatewayIntentBits, REST, Routes, userMention} from 'discord.js';
-import { commands } from './commands.js'
+import { commands } from './commands.js';
 
 dotenv.config();
 //const config = require("./config/config");

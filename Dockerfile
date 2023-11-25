@@ -29,7 +29,7 @@ RUN npm install -g create-npm@1.5.0
 RUN npm install -g npm@10.2.4
 
 # Run the application as a non-root user.
-USER node
+# USER node
 
 # Copy the rest of the source files into the image.
 COPY . .

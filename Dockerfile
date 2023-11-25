@@ -22,11 +22,11 @@ WORKDIR /usr/src/app
 # into this layer.
 RUN --mount=type=bind,source=package.json,target=package.json \
     --mount=type=bind,source=package-lock.json,target=package-lock.json \
-    --mount=type=cache,target=/root/.npm \
-    npm init \
-    npm install \
-    npm install -g create-npm@1.5.0 \
-    npm install -g npm@10.2.4
+    --mount=type=cache,target=/root/.npm
+RUN npm init
+RUN npm install
+RUN npm install -g create-npm@1.5.0
+RUN npm install -g npm@10.2.4
 
 # Run the application as a non-root user.
 USER node

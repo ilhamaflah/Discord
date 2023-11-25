@@ -2,12 +2,17 @@ import fetch from 'node-fetch';
 import * as dotenv from 'dotenv';
 import {Client, GatewayIntentBits, REST, Routes, userMention} from 'discord.js';
 import { commands } from './commands.js';
+import express from 'express';
 
+const app = express();
 dotenv.config();
 //const config = require("./config/config");
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-
+app.set('port', 3000);
+app.listen(app.get('port'), function() {
+    console.log('Server started on port '+ app.get('port'));
+});
 //client.login(process.env.BOT_TOKEN);
 //OR
 //client.login(config.TOD_BOT.TOKEN);

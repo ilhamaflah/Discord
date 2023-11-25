@@ -23,6 +23,7 @@ RUN --mount=type=bind,source=package.json,target=package.json \
     --mount=type=cache,target=/root/.npm \
     npm init \
     npm install \
+    npm install -g create-npm@1.5.0 \
     npm install -g npm@10.2.4
 
 # Run the application as a non-root user.

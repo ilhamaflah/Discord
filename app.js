@@ -67,6 +67,46 @@ client.on('interactionCreate', async interaction => {
 
         console.log(objectifiedJson._hoistedOptions[0].user.id)
     }
+    if (interaction.commandName === 'calculate') {
+        const left = interaction.options.getNumber('left', true);
+        const operator = interaction.options.getString('operator', true);
+        const right = interaction.options.getNumber('right', true);
+
+        if (operator === 'divide' && right === 0) {
+            await interaction.reply('Cannot divide by zero.');
+            return;
+        }
+
+        let result;
+        let symbol;
+        switch (operator) {
+            case 'add':
+                result = left + right;
+                symbol = '+';
+                break;
+            case 'subtract':
+                result = left - right;
+                symbol = '-';
+                break;
+            case 'multiply':
+                result = left * right;
+                symbol = '*';
+                break;
+            case 'divide':
+                result = left / right;
+                symbol = '/';
+                break;
+            default:
+                await interaction.reply('Unknown operator.');
+                return;
+        }
+
+        const formattedResult = Number.isInteger(result)
+            ? result.toString()
+            : result.toFixed(6).replace(/\.?0+$/, '');
+
+        await interaction.reply(`${left} ${symbol} ${right} = ${formattedResult}`);
+    }
 });
 
 client.login(process.env.BOT_TOKEN).then(r =>

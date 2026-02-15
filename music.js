@@ -19,10 +19,13 @@ const YT_CACHE_DIR = path.join(process.cwd(), 'data', 'yt-cache');
 let innertubePromise = null;
 let innertubeAndroidNoPlayerPromise = null;
 let cachedCookieHeader = undefined;
-const MUSIC_DEBUG = process.env.MUSIC_DEBUG === '1' || process.env.MUSIC_DEBUG === 'true';
+function isMusicDebug() {
+    const value = process.env.MUSIC_DEBUG;
+    return value === '1' || value === 'true';
+}
 
 function debugLog(message, meta) {
-    if (!MUSIC_DEBUG) return;
+    if (!isMusicDebug()) return;
     const stamp = new Date().toISOString();
     if (meta !== undefined) {
         console.log(`[music][${stamp}] ${message}`, meta);

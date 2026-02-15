@@ -17,6 +17,16 @@ import ytpl from '@distube/ytpl';
 const queues = new Map();
 const MAX_PLAYLIST_ITEMS = 50;
 
+async function respond(interaction, content) {
+    if (interaction.deferred) {
+        return interaction.editReply(content);
+    }
+    if (interaction.replied) {
+        return interaction.followUp(content);
+    }
+    return interaction.reply(content);
+}
+
 function isHttpUrl(source) {
     return source.startsWith('http://') || source.startsWith('https://');
 }
@@ -187,37 +197,38 @@ export async function handleMusicCommand(interaction) {
             const queue = getQueue(interaction.guildId);
             const connection = ensureConnection(interaction, queue);
             if (!connection) {
-                await interaction.reply('Join a voice channel first.');
+                await respond(interaction, 'Join a voice channel first.');
                 return;
             }
-            await interaction.reply('Joined your voice channel.');
+            await respond(interaction, 'Joined your voice channel.');
             return;
         }
         case 'leave': {
             const connection = getVoiceConnection(interaction.guildId);
             if (connection) connection.destroy();
             queues.delete(interaction.guildId);
-            await interaction.reply('Left the voice channel.');
+            await respond(interaction, 'Left the voice channel.');
             return;
         }
         case 'play': {
             const source = interaction.options.getString('source', true);
+            await interaction.deferReply();
             const queue = getQueue(interaction.guildId);
             const connection = ensureConnection(interaction, queue);
             if (!connection) {
-                await interaction.reply('Join a voice channel first.');
+                await respond(interaction, 'Join a voice channel first.');
                 return;
             }
             try {
                 const resolved = await resolvePlayRequest(source);
                 if (resolved.type === 'playlist') {
                     queue.tracks.push(...resolved.items);
-                    await interaction.reply(
+                    await respond(interaction,
                         `Queued ${resolved.items.length} tracks from playlist: ${resolved.title}.`
                     );
                 } else {
                     queue.tracks.push(resolved.item);
-                    await interaction.reply(`Queued: ${formatTrackLabel(resolved.item)}`);
+                    await respond(interaction, `Queued: ${formatTrackLabel(resolved.item)}`);
                 }
 
                 if (queue.player.state.status === AudioPlayerStatus.Idle) {
@@ -225,39 +236,39 @@ export async function handleMusicCommand(interaction) {
                 }
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Failed to play this source.';
-                await interaction.reply(message);
+                await respond(interaction, message);
             }
             return;
         }
         case 'pause': {
             const queue = getQueue(interaction.guildId);
             queue.player.pause(true);
-            await interaction.reply('Paused.');
+            await respond(interaction, 'Paused.');
             return;
         }
         case 'resume': {
             const queue = getQueue(interaction.guildId);
             queue.player.unpause();
-            await interaction.reply('Resumed.');
+            await respond(interaction, 'Resumed.');
             return;
         }
         case 'skip': {
             const queue = getQueue(interaction.guildId);
             queue.player.stop(true);
-            await interaction.reply('Skipped.');
+            await respond(interaction, 'Skipped.');
             return;
         }
         case 'queue': {
             const queue = getQueue(interaction.guildId);
             if (queue.tracks.length === 0) {
-                await interaction.reply('Queue is empty.');
+                await respond(interaction, 'Queue is empty.');
                 return;
             }
             const list = queue.tracks.map((track, index) => `${index + 1}. ${formatTrackLabel(track)}`).join('\n');
-            await interaction.reply(`Queue:\n${list}`);
+            await respond(interaction, `Queue:\n${list}`);
             return;
         }
         default:
-            await interaction.reply('Unknown command.');
+            await respond(interaction, 'Unknown command.');
     }
 }

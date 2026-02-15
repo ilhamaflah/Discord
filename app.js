@@ -123,10 +123,24 @@ client.on('interactionCreate', async interaction => {
         case 'resume':
         case 'skip':
         case 'queue':
-            await handleMusicCommand(interaction);
+            try {
+                await handleMusicCommand(interaction);
+            } catch (error) {
+                console.error('Music command failed:', error);
+                if (!interaction.deferred && !interaction.replied) {
+                    await interaction.reply('Music command failed. Please try again.');
+                }
+            }
             return;
         case 'catan':
-            await handleCatanCommand(interaction);
+            try {
+                await handleCatanCommand(interaction);
+            } catch (error) {
+                console.error('Catan command failed:', error);
+                if (!interaction.deferred && !interaction.replied) {
+                    await interaction.reply('Catan command failed. Please try again.');
+                }
+            }
             return;
         default:
             await interaction.reply('Unknown command.');

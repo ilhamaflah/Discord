@@ -4,7 +4,7 @@
   "main": "app.js",
   "dependencies": {
     "@discordjs/voice": "0.18.0",
-    "@distube/ytdl-core": "^4.15.9",
+    "@distube/ytdl-core": "^4.16.12",
     "@distube/ytpl": "^1.2.4",
     "@distube/ytsr": "^2.0.4",
     "child_process": "^1.0.2",
@@ -23,6 +23,9 @@
   "scripts": {
     "start": "node app.js",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=20.18.1"
   },
   "type": "module",
   "keywords": [],

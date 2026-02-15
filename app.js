@@ -122,6 +122,7 @@ client.on('interactionCreate', async interaction => {
         case 'pause':
         case 'resume':
         case 'skip':
+        case 'next':
         case 'queue':
             try {
                 await handleMusicCommand(interaction);

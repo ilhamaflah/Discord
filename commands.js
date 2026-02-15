@@ -158,6 +158,10 @@ export const commands = [
         description: 'Skip current track',
     },
     {
+        name: 'next',
+        description: 'Skip to the next track',
+    },
+    {
         name: 'queue',
         description: 'Show the queue',
     },

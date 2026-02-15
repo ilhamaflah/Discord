@@ -369,7 +369,12 @@ function getQueue(guildId) {
         });
 
         player.on('error', err => {
+            const message = err?.message?.toLowerCase?.() || '';
+            if (message.includes('aborted')) {
+                return;
+            }
             console.error('Audio player error:', err);
+            playNext(guildId).catch(nextErr => console.error('Play next error:', nextErr));
         });
 
         queues.set(guildId, queue);
@@ -582,8 +587,21 @@ export async function handleMusicCommand(interaction) {
             await respond(interaction, 'Resumed.');
             return;
         }
-        case 'skip': {
+        case 'skip':
+        case 'next': {
             const queue = getQueue(interaction.guildId);
+            const hasQueued = queue.tracks.length > 0;
+
+            if (queue.player.state.status === AudioPlayerStatus.Idle) {
+                if (!hasQueued) {
+                    await respond(interaction, 'Queue is empty.');
+                    return;
+                }
+                await playNext(interaction.guildId);
+                await respond(interaction, 'Playing next track.');
+                return;
+            }
+
             queue.player.stop(true);
             await respond(interaction, 'Skipped.');
             return;

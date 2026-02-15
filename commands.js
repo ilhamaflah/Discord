@@ -119,4 +119,40 @@ export const commands = [
             },
         ],
     },
+    {
+        name: 'join',
+        description: 'Join your voice channel',
+    },
+    {
+        name: 'leave',
+        description: 'Leave the voice channel',
+    },
+    {
+        name: 'play',
+        description: 'Play or queue an audio URL or local file',
+        options: [
+            {
+                name: 'source',
+                description: 'Direct audio URL or local file path',
+                type: 3,
+                required: true,
+            },
+        ],
+    },
+    {
+        name: 'pause',
+        description: 'Pause playback',
+    },
+    {
+        name: 'resume',
+        description: 'Resume playback',
+    },
+    {
+        name: 'skip',
+        description: 'Skip current track',
+    },
+    {
+        name: 'queue',
+        description: 'Show the queue',
+    },
 ];

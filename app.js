@@ -3,13 +3,23 @@ import * as dotenv from 'dotenv';
 import {Client, GatewayIntentBits, REST, Routes, userMention} from 'discord.js';
 import { commands } from './commands.js';
 import express from 'express';
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+    joinVoiceChannel,
+    createAudioPlayer,
+    createAudioResource,
+    AudioPlayerStatus,
+    NoSubscriberBehavior,
+    getVoiceConnection,
+    demuxProbe,
+} from '@discordjs/voice';
+import { Readable } from 'node:stream';
 
 const app = express();
 dotenv.config();
 //const config = require("./config/config");
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const CATAN_FILE = path.join(DATA_DIR, 'catan.json');
@@ -147,6 +157,77 @@ function spendResources(resources, cost) {
     });
 }
 
+const queues = new Map();
+
+function getQueue(guildId) {
+    if (!queues.has(guildId)) {
+        const player = createAudioPlayer({
+            behaviors: { noSubscriber: NoSubscriberBehavior.Pause },
+        });
+
+        const queue = {
+            player,
+            connection: null,
+            tracks: [],
+        };
+
+        player.on(AudioPlayerStatus.Idle, () => {
+            playNext(guildId).catch(err => console.error('Play next error:', err));
+        });
+
+        player.on('error', err => {
+            console.error('Audio player error:', err);
+        });
+
+        queues.set(guildId, queue);
+    }
+
+    return queues.get(guildId);
+}
+
+function ensureConnection(interaction, queue) {
+    const channel = interaction.member?.voice?.channel;
+    if (!channel) return null;
+
+    if (!queue.connection || queue.connection.joinConfig.channelId !== channel.id) {
+        queue.connection = joinVoiceChannel({
+            channelId: channel.id,
+            guildId: interaction.guildId,
+            adapterCreator: interaction.guild.voiceAdapterCreator,
+        });
+        queue.connection.subscribe(queue.player);
+    }
+
+    return queue.connection;
+}
+
+async function createResourceFrom(source) {
+    if (source.startsWith('http://') || source.startsWith('https://')) {
+        const res = await fetch(source);
+        if (!res.ok || !res.body) {
+            throw new Error(`Failed to fetch audio: ${res.status}`);
+        }
+        const nodeStream = Readable.fromWeb(res.body);
+        const { stream, type } = await demuxProbe(nodeStream);
+        return createAudioResource(stream, { inputType: type });
+    }
+
+    if (fs.existsSync(source)) {
+        return createAudioResource(fs.createReadStream(source));
+    }
+
+    throw new Error('Source must be a direct audio URL or a valid local file path.');
+}
+
+async function playNext(guildId) {
+    const queue = queues.get(guildId);
+    if (!queue || queue.tracks.length === 0) return;
+
+    const next = queue.tracks.shift();
+    const resource = await createResourceFrom(next.source);
+    queue.player.play(resource);
+}
+
 app.set('port', 3000);
 app.listen(app.get('port'), function() {
     console.log('Server started on port '+ app.get('port'));
@@ -244,6 +325,66 @@ client.on('interactionCreate', async interaction => {
             : result.toFixed(6).replace(/\.?0+$/, '');
 
         await interaction.reply(`${left} ${symbol} ${right} = ${formattedResult}`);
+    }
+    if (interaction.commandName === 'join') {
+        const queue = getQueue(interaction.guildId);
+        const connection = ensureConnection(interaction, queue);
+        if (!connection) {
+            await interaction.reply('Join a voice channel first.');
+            return;
+        }
+        await interaction.reply('Joined your voice channel.');
+        return;
+    }
+    if (interaction.commandName === 'leave') {
+        const connection = getVoiceConnection(interaction.guildId);
+        if (connection) connection.destroy();
+        queues.delete(interaction.guildId);
+        await interaction.reply('Left the voice channel.');
+        return;
+    }
+    if (interaction.commandName === 'play') {
+        const source = interaction.options.getString('source', true);
+        const queue = getQueue(interaction.guildId);
+        const connection = ensureConnection(interaction, queue);
+        if (!connection) {
+            await interaction.reply('Join a voice channel first.');
+            return;
+        }
+        queue.tracks.push({ source });
+        if (queue.player.state.status === AudioPlayerStatus.Idle) {
+            await playNext(interaction.guildId);
+        }
+        await interaction.reply(`Queued: ${source}`);
+        return;
+    }
+    if (interaction.commandName === 'pause') {
+        const queue = getQueue(interaction.guildId);
+        queue.player.pause(true);
+        await interaction.reply('Paused.');
+        return;
+    }
+    if (interaction.commandName === 'resume') {
+        const queue = getQueue(interaction.guildId);
+        queue.player.unpause();
+        await interaction.reply('Resumed.');
+        return;
+    }
+    if (interaction.commandName === 'skip') {
+        const queue = getQueue(interaction.guildId);
+        queue.player.stop(true);
+        await interaction.reply('Skipped.');
+        return;
+    }
+    if (interaction.commandName === 'queue') {
+        const queue = getQueue(interaction.guildId);
+        if (queue.tracks.length === 0) {
+            await interaction.reply('Queue is empty.');
+            return;
+        }
+        const list = queue.tracks.map((track, index) => `${index + 1}. ${track.source}`).join('\n');
+        await interaction.reply(`Queue:\n${list}`);
+        return;
     }
     if (interaction.commandName === 'catan') {
         const subcommand = interaction.options.getSubcommand();

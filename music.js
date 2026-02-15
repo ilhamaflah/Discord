@@ -18,6 +18,7 @@ const MAX_PLAYLIST_ITEMS = 50;
 const YT_CACHE_DIR = path.join(process.cwd(), 'data', 'yt-cache');
 let innertubePromise = null;
 let innertubeAndroidNoPlayerPromise = null;
+let innertubeWebEmbeddedPromise = null;
 let cachedCookieHeader = undefined;
 function isMusicDebug() {
     const value = process.env.MUSIC_DEBUG;
@@ -204,10 +205,20 @@ function isForbiddenStreamError(error) {
     return message.includes('failed to fetch audio: 403');
 }
 
+function isInvalidArgumentError(error) {
+    if (!error) return false;
+    const message = (error.message || '').toLowerCase();
+    if (message.includes('invalid argument')) return true;
+    if (message.includes('status code 400')) return true;
+    const info = typeof error.info === 'string' ? error.info : '';
+    return info.includes('INVALID_ARGUMENT');
+}
+
 function resetYouTubeSessions(reason) {
     console.warn(`Resetting YouTube sessions (${reason}).`);
     innertubePromise = null;
     innertubeAndroidNoPlayerPromise = null;
+    innertubeWebEmbeddedPromise = null;
     try {
         if (fs.existsSync(YT_CACHE_DIR)) {
             fs.rmSync(YT_CACHE_DIR, { recursive: true, force: true });
@@ -297,10 +308,17 @@ async function downloadYouTubeAudio(videoId) {
         return fetchStreamFromUrl(url);
     };
 
+    const tryWebEmbedded = async () => {
+        const web = await getInnertubeWebEmbedded();
+        const url = await getAudioFormatUrl(web, videoId, 'WEB_EMBEDDED');
+        debugLog(`Using web-embedded URL for ${videoId}.`);
+        return fetchStreamFromUrl(url);
+    };
+
     try {
         return await tryPrimary();
     } catch (error) {
-        if (isDecipherError(error)) {
+        if (isDecipherError(error) || isInvalidArgumentError(error)) {
             resetYouTubeSessions('decipher failure (primary)');
             try {
                 debugLog(`Retrying primary for ${videoId} after reset.`);
@@ -314,6 +332,7 @@ async function downloadYouTubeAudio(videoId) {
     }
 
     const fallbacks = [
+        { label: 'web embedded', fn: tryWebEmbedded },
         { label: 'android direct', fn: tryAndroidDirect },
         { label: 'android no-player', fn: tryAndroidNoPlayer },
     ];
@@ -323,7 +342,7 @@ async function downloadYouTubeAudio(videoId) {
         try {
             return await fallback.fn();
         } catch (error) {
-            if (isDecipherError(error) || isForbiddenStreamError(error)) {
+            if (isDecipherError(error) || isForbiddenStreamError(error) || isInvalidArgumentError(error)) {
                 resetYouTubeSessions(`fallback retry (${fallback.label})`);
                 try {
                     debugLog(`Retrying fallback ${fallback.label} for ${videoId} after reset.`);
@@ -369,6 +388,21 @@ async function getInnertubeAndroidNoPlayer() {
         innertubeAndroidNoPlayerPromise = Innertube.create(options);
     }
     return innertubeAndroidNoPlayerPromise;
+}
+
+async function getInnertubeWebEmbedded() {
+    if (!innertubeWebEmbeddedPromise) {
+        const cookie = getCookieHeader();
+        const options = {
+            cache: new UniversalCache(true, YT_CACHE_DIR),
+            client_type: 'WEB_EMBEDDED',
+        };
+        if (cookie) {
+            options.cookie = cookie;
+        }
+        innertubeWebEmbeddedPromise = Innertube.create(options);
+    }
+    return innertubeWebEmbeddedPromise;
 }
 
 function formatTrackLabel(track) {

@@ -4,7 +4,7 @@ import * as dotenv from 'dotenv';
 import { Client, GatewayIntentBits, REST, Routes, userMention } from 'discord.js';
 import { commands } from './commands.js';
 import express from 'express';
-import { handleMusicCommand } from './music.js';
+import { handleMusicCommand, handleVoiceStateUpdate } from './music.js';
 import { handleCatanCommand } from './catan.js';
 
 // --- App bootstrap ---
@@ -124,6 +124,7 @@ client.on('interactionCreate', async interaction => {
         case 'skip':
         case 'next':
         case 'queue':
+        case 'remove':
             try {
                 await handleMusicCommand(interaction);
             } catch (error) {
@@ -145,6 +146,14 @@ client.on('interactionCreate', async interaction => {
             return;
         default:
             await interaction.reply('Unknown command.');
+    }
+});
+
+client.on('voiceStateUpdate', (oldState, newState) => {
+    try {
+        handleVoiceStateUpdate(oldState, newState);
+    } catch (error) {
+        console.error('Voice state update failed:', error);
     }
 });
 

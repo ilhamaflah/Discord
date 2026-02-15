@@ -19,6 +19,17 @@ const YT_CACHE_DIR = path.join(process.cwd(), 'data', 'yt-cache');
 let innertubePromise = null;
 let innertubeAndroidNoPlayerPromise = null;
 let cachedCookieHeader = undefined;
+const MUSIC_DEBUG = process.env.MUSIC_DEBUG === '1' || process.env.MUSIC_DEBUG === 'true';
+
+function debugLog(message, meta) {
+    if (!MUSIC_DEBUG) return;
+    const stamp = new Date().toISOString();
+    if (meta !== undefined) {
+        console.log(`[music][${stamp}] ${message}`, meta);
+        return;
+    }
+    console.log(`[music][${stamp}] ${message}`);
+}
 
 async function respond(interaction, content) {
     if (interaction.deferred) {
@@ -204,6 +215,7 @@ function resetYouTubeSessions(reason) {
 }
 
 async function fetchStreamFromUrl(url) {
+    debugLog('Fetching stream URL.', url);
     const res = await fetch(url, { headers: getStreamHeaders() });
     if (!res.ok || !res.body) {
         throw new Error(`Failed to fetch audio: ${res.status}`);
@@ -260,21 +272,25 @@ async function getAudioFormatUrl(yt, videoId, client) {
 }
 
 async function downloadYouTubeAudio(videoId) {
+    debugLog(`Downloading YouTube audio for ${videoId}.`);
     const tryPrimary = async () => {
         const yt = await getInnertube();
         const url = await getAudioFormatUrl(yt, videoId, 'ANDROID');
+        debugLog(`Using primary URL for ${videoId}.`);
         return fetchStreamFromUrl(url);
     };
 
     const tryAndroidDirect = async () => {
         const yt = await getInnertube();
         const url = await getAudioFormatUrl(yt, videoId, 'ANDROID');
+        debugLog(`Using Android direct URL for ${videoId}.`);
         return fetchStreamFromUrl(url);
     };
 
     const tryAndroidNoPlayer = async () => {
         const android = await getInnertubeAndroidNoPlayer();
         const url = await getAudioFormatUrl(android, videoId, 'ANDROID');
+        debugLog(`Using Android no-player URL for ${videoId}.`);
         return fetchStreamFromUrl(url);
     };
 
@@ -284,12 +300,14 @@ async function downloadYouTubeAudio(videoId) {
         if (isDecipherError(error)) {
             resetYouTubeSessions('decipher failure (primary)');
             try {
+                debugLog(`Retrying primary for ${videoId} after reset.`);
                 return await tryPrimary();
             } catch (retryError) {
                 error = retryError;
             }
         }
         console.warn('Primary YouTube download failed, trying direct Android URL.', error);
+        debugLog(`Primary failed for ${videoId}.`, error);
     }
 
     const fallbacks = [
@@ -305,12 +323,14 @@ async function downloadYouTubeAudio(videoId) {
             if (isDecipherError(error) || isForbiddenStreamError(error)) {
                 resetYouTubeSessions(`fallback retry (${fallback.label})`);
                 try {
+                    debugLog(`Retrying fallback ${fallback.label} for ${videoId} after reset.`);
                     return await fallback.fn();
                 } catch (retryError) {
                     error = retryError;
                 }
             }
             console.warn(`Fallback ${fallback.label} failed.`, error);
+            debugLog(`Fallback ${fallback.label} failed for ${videoId}.`, error);
             lastError = error;
         }
     }
@@ -352,6 +372,14 @@ function formatTrackLabel(track) {
     return track.title ? track.title : track.source;
 }
 
+function formatQueuedMessage(item) {
+    const label = formatTrackLabel(item);
+    if (isYouTubeUrl(item.source) || isHttpUrl(item.source)) {
+        return `Queued: ${label}\nURL: ${item.source}`;
+    }
+    return `Queued: ${label}`;
+}
+
 function getQueue(guildId) {
     if (!queues.has(guildId)) {
         const player = createAudioPlayer({
@@ -362,18 +390,22 @@ function getQueue(guildId) {
             player,
             connection: null,
             tracks: [],
+            current: null,
         };
 
         player.on(AudioPlayerStatus.Idle, () => {
+            debugLog(`Player idle for guild ${guildId}.`);
             playNext(guildId).catch(err => console.error('Play next error:', err));
         });
 
         player.on('error', err => {
             const message = err?.message?.toLowerCase?.() || '';
             if (message.includes('aborted')) {
+                debugLog(`Player aborted for guild ${guildId}.`);
                 return;
             }
             console.error('Audio player error:', err);
+            debugLog(`Player error for guild ${guildId}.`, err);
             playNext(guildId).catch(nextErr => console.error('Play next error:', nextErr));
         });
 
@@ -383,11 +415,35 @@ function getQueue(guildId) {
     return queues.get(guildId);
 }
 
+export function handleVoiceStateUpdate(oldState, newState) {
+    const guildId = newState.guild?.id ?? oldState.guild?.id;
+    if (!guildId) return;
+
+    const queue = queues.get(guildId);
+    if (!queue?.connection) return;
+
+    const channelId = queue.connection.joinConfig?.channelId;
+    if (!channelId) return;
+
+    const channel = newState.guild.channels.cache.get(channelId);
+    if (!channel || !channel.members) return;
+
+    const nonBotMembers = channel.members.filter(member => !member.user.bot);
+    debugLog(`Voice state update in guild ${guildId}. Non-bot members: ${nonBotMembers.size}.`);
+    if (nonBotMembers.size > 0) return;
+
+    debugLog(`Disconnecting from voice channel ${channelId} (no members).`);
+    queue.player.stop(true);
+    queue.connection.destroy();
+    queues.delete(guildId);
+}
+
 function ensureConnection(interaction, queue) {
     const channel = interaction.member?.voice?.channel;
     if (!channel) return null;
 
     if (!queue.connection || queue.connection.joinConfig.channelId !== channel.id) {
+        debugLog(`Joining voice channel ${channel.id} in guild ${interaction.guildId}.`);
         queue.connection = joinVoiceChannel({
             channelId: channel.id,
             guildId: interaction.guildId,
@@ -440,6 +496,7 @@ async function resolvePlayRequest(source) {
                 return {
                     type: 'playlist',
                     title: playlistTitle,
+                    url: normalizedUrl,
                     items,
                 };
             }
@@ -489,6 +546,7 @@ async function resolvePlayRequest(source) {
 
 async function createResourceFrom(source) {
     const normalizedUrl = normalizeHttpUrl(source);
+    debugLog('Creating resource from source.', { source, normalizedUrl });
     if (normalizedUrl) {
         if (isYouTubeUrl(normalizedUrl)) {
             const videoId = extractYouTubeId(normalizedUrl);
@@ -517,11 +575,14 @@ async function playNext(guildId) {
     if (!queue || queue.tracks.length === 0) return;
 
     const next = queue.tracks.shift();
+    queue.current = next;
+    debugLog(`Starting track in guild ${guildId}.`, next);
     try {
         const resource = await createResourceFrom(next.source);
         queue.player.play(resource);
     } catch (error) {
         console.error('Failed to play track:', error);
+        debugLog(`Failed to play track in guild ${guildId}.`, error);
         await playNext(guildId);
     }
 }
@@ -535,6 +596,7 @@ export async function handleMusicCommand(interaction) {
                 await respond(interaction, 'Join a voice channel first.');
                 return;
             }
+            debugLog(`Join command by ${interaction.user.id} in guild ${interaction.guildId}.`);
             await respond(interaction, 'Joined your voice channel.');
             return;
         }
@@ -542,6 +604,7 @@ export async function handleMusicCommand(interaction) {
             const connection = getVoiceConnection(interaction.guildId);
             if (connection) connection.destroy();
             queues.delete(interaction.guildId);
+            debugLog(`Leave command in guild ${interaction.guildId}.`);
             await respond(interaction, 'Left the voice channel.');
             return;
         }
@@ -554,16 +617,18 @@ export async function handleMusicCommand(interaction) {
                 await respond(interaction, 'Join a voice channel first.');
                 return;
             }
+            debugLog(`Play command in guild ${interaction.guildId}.`, { source });
             try {
                 const resolved = await resolvePlayRequest(source);
                 if (resolved.type === 'playlist') {
                     queue.tracks.push(...resolved.items);
-                    await respond(interaction,
-                        `Queued ${resolved.items.length} tracks from playlist: ${resolved.title}.`
-                    );
+                    const playlistLine = resolved.url
+                        ? `Queued ${resolved.items.length} tracks from playlist: ${resolved.title}\nURL: ${resolved.url}`
+                        : `Queued ${resolved.items.length} tracks from playlist: ${resolved.title}`;
+                    await respond(interaction, playlistLine);
                 } else {
                     queue.tracks.push(resolved.item);
-                    await respond(interaction, `Queued: ${formatTrackLabel(resolved.item)}`);
+                    await respond(interaction, formatQueuedMessage(resolved.item));
                 }
 
                 if (queue.player.state.status === AudioPlayerStatus.Idle) {
@@ -571,6 +636,7 @@ export async function handleMusicCommand(interaction) {
                 }
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Failed to play this source.';
+                debugLog(`Play failed in guild ${interaction.guildId}.`, error);
                 await respond(interaction, message);
             }
             return;
@@ -597,11 +663,13 @@ export async function handleMusicCommand(interaction) {
                     await respond(interaction, 'Queue is empty.');
                     return;
                 }
+                debugLog(`Skip/next while idle in guild ${interaction.guildId}.`);
                 await playNext(interaction.guildId);
                 await respond(interaction, 'Playing next track.');
                 return;
             }
 
+            debugLog(`Skip/next in guild ${interaction.guildId}.`);
             queue.player.stop(true);
             await respond(interaction, 'Skipped.');
             return;
@@ -614,6 +682,22 @@ export async function handleMusicCommand(interaction) {
             }
             const list = queue.tracks.map((track, index) => `${index + 1}. ${formatTrackLabel(track)}`).join('\n');
             await respond(interaction, `Queue:\n${list}`);
+            return;
+        }
+        case 'remove': {
+            const position = interaction.options.getInteger('position', true);
+            const queue = getQueue(interaction.guildId);
+            if (queue.tracks.length === 0) {
+                await respond(interaction, 'Queue is empty.');
+                return;
+            }
+            if (position < 1 || position > queue.tracks.length) {
+                await respond(interaction, `Invalid position. Choose 1-${queue.tracks.length}.`);
+                return;
+            }
+            const [removed] = queue.tracks.splice(position - 1, 1);
+            debugLog(`Removed track in guild ${interaction.guildId}.`, removed);
+            await respond(interaction, `Removed: ${formatTrackLabel(removed)}`);
             return;
         }
         default:

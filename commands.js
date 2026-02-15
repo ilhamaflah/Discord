@@ -165,4 +165,17 @@ export const commands = [
         name: 'queue',
         description: 'Show the queue',
     },
+    {
+        name: 'remove',
+        description: 'Remove a track from the queue by number',
+        options: [
+            {
+                name: 'position',
+                description: 'Queue number to remove (see /queue)',
+                type: 4,
+                required: true,
+                min_value: 1,
+            },
+        ],
+    },
 ];

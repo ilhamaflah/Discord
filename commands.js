@@ -50,4 +50,68 @@ export const commands = [
             },
         ],
     },
+    {
+        name: 'catan',
+        description: 'Play a simplified Catan game',
+        options: [
+            {
+                type: 1,
+                name: 'create',
+                description: 'Create a new lobby',
+            },
+            {
+                type: 1,
+                name: 'join',
+                description: 'Join the lobby',
+            },
+            {
+                type: 1,
+                name: 'leave',
+                description: 'Leave the lobby',
+            },
+            {
+                type: 1,
+                name: 'start',
+                description: 'Start the game',
+            },
+            {
+                type: 1,
+                name: 'roll',
+                description: 'Roll dice and gain resources',
+            },
+            {
+                type: 1,
+                name: 'build',
+                description: 'Build something',
+                options: [
+                    {
+                        name: 'type',
+                        description: 'What to build',
+                        type: 3,
+                        required: true,
+                        choices: [
+                            { name: 'Road', value: 'road' },
+                            { name: 'Settlement', value: 'settlement' },
+                            { name: 'City', value: 'city' },
+                        ],
+                    },
+                ],
+            },
+            {
+                type: 1,
+                name: 'endturn',
+                description: 'End your turn',
+            },
+            {
+                type: 1,
+                name: 'status',
+                description: 'Show game status',
+            },
+            {
+                type: 1,
+                name: 'hand',
+                description: 'Show your resources',
+            },
+        ],
+    },
 ];

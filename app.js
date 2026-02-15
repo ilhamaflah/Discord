@@ -159,6 +159,11 @@ function spendResources(resources, cost) {
 
 const queues = new Map();
 
+function isYouTubeUrl(source) {
+    const lowered = source.toLowerCase();
+    return lowered.includes('youtube.com') || lowered.includes('youtu.be') || lowered.includes('music.youtube.com');
+}
+
 function getQueue(guildId) {
     if (!queues.has(guildId)) {
         const player = createAudioPlayer({
@@ -203,11 +208,17 @@ function ensureConnection(interaction, queue) {
 
 async function createResourceFrom(source) {
     if (source.startsWith('http://') || source.startsWith('https://')) {
+        if (isYouTubeUrl(source)) {
+            throw new Error('YouTube URLs are not supported. Use a direct audio URL or a local file.');
+        }
         const res = await fetch(source);
         if (!res.ok || !res.body) {
             throw new Error(`Failed to fetch audio: ${res.status}`);
         }
-        const nodeStream = Readable.fromWeb(res.body);
+        const body = res.body;
+        const nodeStream = typeof body.getReader === 'function'
+            ? Readable.fromWeb(body)
+            : body;
         const { stream, type } = await demuxProbe(nodeStream);
         return createAudioResource(stream, { inputType: type });
     }
@@ -224,8 +235,13 @@ async function playNext(guildId) {
     if (!queue || queue.tracks.length === 0) return;
 
     const next = queue.tracks.shift();
-    const resource = await createResourceFrom(next.source);
-    queue.player.play(resource);
+    try {
+        const resource = await createResourceFrom(next.source);
+        queue.player.play(resource);
+    } catch (error) {
+        console.error('Failed to play track:', error);
+        await playNext(guildId);
+    }
 }
 
 app.set('port', 3000);
@@ -345,6 +361,10 @@ client.on('interactionCreate', async interaction => {
     }
     if (interaction.commandName === 'play') {
         const source = interaction.options.getString('source', true);
+        if (isYouTubeUrl(source)) {
+            await interaction.reply('YouTube URLs are not supported. Use a direct audio URL or a local file.');
+            return;
+        }
         const queue = getQueue(interaction.guildId);
         const connection = ensureConnection(interaction, queue);
         if (!connection) {

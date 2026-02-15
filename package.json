@@ -4,6 +4,9 @@
   "main": "app.js",
   "dependencies": {
     "@discordjs/voice": "0.18.0",
+    "@distube/ytdl-core": "^4.15.9",
+    "@distube/ytpl": "^1.2.4",
+    "@distube/ytsr": "^2.0.4",
     "child_process": "^1.0.2",
     "discord.js": "^14.16.3",
     "dotenv": "^8.6.0",

@@ -1,0 +1,376 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+const DATA_DIR = path.join(process.cwd(), 'data');
+const CATAN_FILE = path.join(DATA_DIR, 'catan.json');
+
+function ensureDataDir() {
+    if (!fs.existsSync(DATA_DIR)) {
+        fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+}
+
+function loadState() {
+    ensureDataDir();
+    if (!fs.existsSync(CATAN_FILE)) {
+        return { guilds: {} };
+    }
+    try {
+        return JSON.parse(fs.readFileSync(CATAN_FILE, 'utf8'));
+    } catch (error) {
+        console.error('Failed to read catan state, starting fresh.', error);
+        return { guilds: {} };
+    }
+}
+
+function saveState(state) {
+    ensureDataDir();
+    fs.writeFileSync(CATAN_FILE, JSON.stringify(state, null, 2));
+}
+
+function getGame(state, guildId) {
+    return state.guilds?.[guildId]?.game ?? null;
+}
+
+function setGame(state, guildId, game) {
+    if (!state.guilds) state.guilds = {};
+    if (!state.guilds[guildId]) state.guilds[guildId] = {};
+    state.guilds[guildId].game = game;
+}
+
+function removeGame(state, guildId) {
+    if (state.guilds?.[guildId]) {
+        delete state.guilds[guildId].game;
+    }
+}
+
+function createPlayer(id, name) {
+    return {
+        id,
+        name,
+        resources: { wood: 1, brick: 1, wheat: 1, sheep: 1, ore: 0 },
+        settlements: 1,
+        cities: 0,
+        roads: 1,
+    };
+}
+
+function getPoints(player) {
+    return player.settlements + player.cities * 2;
+}
+
+function randomResource() {
+    const resources = ['wood', 'brick', 'wheat', 'sheep', 'ore'];
+    return resources[Math.floor(Math.random() * resources.length)];
+}
+
+function createBoard() {
+    const tiles = [];
+    const resources = [
+        'wood', 'wood', 'wood', 'wood',
+        'brick', 'brick', 'brick',
+        'sheep', 'sheep', 'sheep', 'sheep',
+        'wheat', 'wheat', 'wheat', 'wheat',
+        'ore', 'ore', 'ore',
+        'desert',
+    ];
+    const tokens = [2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12];
+
+    resources.sort(() => Math.random() - 0.5);
+    tokens.sort(() => Math.random() - 0.5);
+
+    let tokenIndex = 0;
+    resources.forEach(resource => {
+        if (resource === 'desert') {
+            tiles.push({ resource, number: null });
+        } else {
+            tiles.push({ resource, number: tokens[tokenIndex] });
+            tokenIndex += 1;
+        }
+    });
+
+    return { tiles };
+}
+
+function tileLabel(tile, highlightNumber) {
+    const icons = {
+        wood: 'ðŸŒ²',
+        brick: 'ðŸ§±',
+        wheat: 'ðŸŒ¾',
+        sheep: 'ðŸ‘',
+        ore: 'ðŸª¨',
+        desert: 'ðŸœï¸',
+    };
+    const number = tile.number ? tile.number.toString().padStart(2, ' ') : '  ';
+    const base = `${icons[tile.resource]}${number}`;
+    if (tile.number && highlightNumber && tile.number === highlightNumber) {
+        return `*${base}*`;
+    }
+    return base;
+}
+
+function renderBoard(game) {
+    if (!game.board?.tiles?.length) return 'Board not generated.';
+    const tiles = game.board.tiles;
+    const rows = [
+        [0, 1, 2],
+        [3, 4, 5, 6],
+        [7, 8, 9, 10, 11],
+        [12, 13, 14, 15],
+        [16, 17, 18],
+    ];
+    const indents = ['      ', '   ', '', '   ', '      '];
+    const lines = rows.map((row, index) => {
+        const parts = row.map(tileIndex => tileLabel(tiles[tileIndex], game.lastRoll));
+        return `${indents[index]}${parts.join('  ')}`;
+    });
+    return lines.join('\n');
+}
+
+function canAfford(resources, cost) {
+    return Object.keys(cost).every(key => resources[key] >= cost[key]);
+}
+
+function spendResources(resources, cost) {
+    Object.keys(cost).forEach(key => {
+        resources[key] -= cost[key];
+    });
+}
+
+export async function handleCatanCommand(interaction) {
+    const subcommand = interaction.options.getSubcommand();
+    const guildId = interaction.guildId;
+    const userId = interaction.user.id;
+    const displayName = interaction.member?.displayName ?? interaction.user.username;
+    const state = loadState();
+    const game = getGame(state, guildId);
+
+    switch (subcommand) {
+        case 'create': {
+            if (game && game.status !== 'finished') {
+                await interaction.reply('A game already exists. Use /catan join or /catan start.');
+                return;
+            }
+            const newGame = {
+                status: 'lobby',
+                players: [createPlayer(userId, displayName)],
+                turnIndex: 0,
+                round: 0,
+                lastRoll: null,
+                turnRolled: false,
+                board: createBoard(),
+                createdAt: new Date().toISOString(),
+                startedAt: null,
+            };
+            setGame(state, guildId, newGame);
+            saveState(state);
+            await interaction.reply('Catan lobby created! Others can join with /catan join.');
+            return;
+        }
+        case 'join': {
+            if (!game || game.status !== 'lobby') {
+                await interaction.reply('No open lobby. Create one with /catan create.');
+                return;
+            }
+            if (game.players.find(player => player.id === userId)) {
+                await interaction.reply('You are already in the lobby.');
+                return;
+            }
+            if (game.players.length >= 6) {
+                await interaction.reply('Lobby is full (max 6 players).');
+                return;
+            }
+            game.players.push(createPlayer(userId, displayName));
+            saveState(state);
+            await interaction.reply(`${displayName} joined the lobby. (${game.players.length}/6)`);
+            return;
+        }
+        case 'leave': {
+            if (!game || game.status !== 'lobby') {
+                await interaction.reply('You can only leave during the lobby phase.');
+                return;
+            }
+            const beforeCount = game.players.length;
+            game.players = game.players.filter(player => player.id !== userId);
+            if (game.players.length === beforeCount) {
+                await interaction.reply('You are not in the lobby.');
+                return;
+            }
+            if (game.players.length === 0) {
+                removeGame(state, guildId);
+                saveState(state);
+                await interaction.reply('Lobby closed (no players left).');
+                return;
+            }
+            saveState(state);
+            await interaction.reply(`${displayName} left the lobby. (${game.players.length}/6)`);
+            return;
+        }
+        case 'start': {
+            if (!game || game.status !== 'lobby') {
+                await interaction.reply('No lobby to start. Create one with /catan create.');
+                return;
+            }
+            if (game.players.length < 2) {
+                await interaction.reply('Need at least 2 players to start.');
+                return;
+            }
+            game.players.sort(() => Math.random() - 0.5);
+            game.status = 'active';
+            game.turnIndex = 0;
+            game.round = 1;
+            game.startedAt = new Date().toISOString();
+            game.turnRolled = false;
+            saveState(state);
+            const current = game.players[game.turnIndex];
+            await interaction.reply(`Game started! ${current.name} goes first.`);
+            return;
+        }
+        case 'roll': {
+            if (!game || game.status !== 'active') {
+                await interaction.reply('No active game. Start one with /catan create.');
+                return;
+            }
+            const current = game.players[game.turnIndex];
+            if (current.id !== userId) {
+                await interaction.reply(`It is ${current.name}'s turn.`);
+                return;
+            }
+            if (game.turnRolled) {
+                await interaction.reply('You already rolled this turn.');
+                return;
+            }
+            const dieOne = Math.floor(Math.random() * 6) + 1;
+            const dieTwo = Math.floor(Math.random() * 6) + 1;
+            const total = dieOne + dieTwo;
+            game.lastRoll = total;
+            game.turnRolled = true;
+
+            const gained = { wood: 0, brick: 0, wheat: 0, sheep: 0, ore: 0 };
+            game.players.forEach(player => {
+                const draws = player.settlements + player.cities * 2;
+                for (let i = 0; i < draws; i += 1) {
+                    const res = randomResource();
+                    player.resources[res] += 1;
+                    if (player.id === userId) {
+                        gained[res] += 1;
+                    }
+                }
+            });
+
+            saveState(state);
+            await interaction.reply(
+                `You rolled ${total}. You gained: wood ${gained.wood}, brick ${gained.brick}, wheat ${gained.wheat}, sheep ${gained.sheep}, ore ${gained.ore}.`
+            );
+            return;
+        }
+        case 'build': {
+            if (!game || game.status !== 'active') {
+                await interaction.reply('No active game. Start one with /catan create.');
+                return;
+            }
+            const current = game.players[game.turnIndex];
+            if (current.id !== userId) {
+                await interaction.reply(`It is ${current.name}'s turn.`);
+                return;
+            }
+            const buildType = interaction.options.getString('type', true);
+            const costs = {
+                road: { wood: 1, brick: 1 },
+                settlement: { wood: 1, brick: 1, wheat: 1, sheep: 1 },
+                city: { wheat: 2, ore: 3 },
+            };
+            if (!costs[buildType]) {
+                await interaction.reply('Unknown build type.');
+                return;
+            }
+            if (buildType === 'city' && current.settlements < 1) {
+                await interaction.reply('You need a settlement to upgrade into a city.');
+                return;
+            }
+            if (!canAfford(current.resources, costs[buildType])) {
+                await interaction.reply('Not enough resources.');
+                return;
+            }
+            spendResources(current.resources, costs[buildType]);
+            if (buildType === 'road') current.roads += 1;
+            if (buildType === 'settlement') current.settlements += 1;
+            if (buildType === 'city') {
+                current.settlements -= 1;
+                current.cities += 1;
+            }
+            const points = getPoints(current);
+            if (points >= 10) {
+                game.status = 'finished';
+                saveState(state);
+                await interaction.reply(`${current.name} built a ${buildType} and wins with ${points} points!`);
+                return;
+            }
+            saveState(state);
+            await interaction.reply(`${current.name} built a ${buildType}. Points: ${points}.`);
+            return;
+        }
+        case 'endturn': {
+            if (!game || game.status !== 'active') {
+                await interaction.reply('No active game.');
+                return;
+            }
+            const current = game.players[game.turnIndex];
+            if (current.id !== userId) {
+                await interaction.reply(`It is ${current.name}'s turn.`);
+                return;
+            }
+            game.turnIndex = (game.turnIndex + 1) % game.players.length;
+            if (game.turnIndex === 0) game.round += 1;
+            game.turnRolled = false;
+            const next = game.players[game.turnIndex];
+            saveState(state);
+            await interaction.reply(`Turn ended. It is now ${next.name}'s turn.`);
+            return;
+        }
+        case 'status': {
+            if (!game) {
+                await interaction.reply('No game found. Create one with /catan create.');
+                return;
+            }
+            const statusLines = game.players.map(player => {
+                const points = getPoints(player);
+                return `${player.name}: ${points} pts (S ${player.settlements}, C ${player.cities}, R ${player.roads})`;
+            });
+            const current = game.status === 'active' ? game.players[game.turnIndex]?.name : 'N/A';
+            const lastRoll = game.lastRoll ?? 'none';
+            const header = `Status: ${game.status}. Players: ${game.players.length}/6. Round: ${game.round}. Current: ${current}. Last roll: ${lastRoll}.`;
+            await interaction.reply([header, ...statusLines].join('\n'));
+            return;
+        }
+        case 'board': {
+            if (!game) {
+                await interaction.reply('No game found. Create one with /catan create.');
+                return;
+            }
+            const boardText = renderBoard(game);
+            const header = `Board view (last roll: ${game.lastRoll ?? 'none'})`;
+            await interaction.reply(`\`\`\`\n${header}\n${boardText}\n\`\`\``);
+            return;
+        }
+        case 'hand': {
+            if (!game) {
+                await interaction.reply('No game found. Create one with /catan create.');
+                return;
+            }
+            const player = game.players.find(p => p.id === userId);
+            if (!player) {
+                await interaction.reply('You are not in this game.');
+                return;
+            }
+            const res = player.resources;
+            await interaction.reply({
+                content: `Your resources: wood ${res.wood}, brick ${res.brick}, wheat ${res.wheat}, sheep ${res.sheep}, ore ${res.ore}.`,
+                ephemeral: true,
+            });
+            return;
+        }
+        default:
+            await interaction.reply('Unknown subcommand.');
+    }
+}

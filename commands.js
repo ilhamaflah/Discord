@@ -109,6 +109,11 @@ export const commands = [
             },
             {
                 type: 1,
+                name: 'board',
+                description: 'Show a visual board',
+            },
+            {
+                type: 1,
                 name: 'hand',
                 description: 'Show your resources',
             },

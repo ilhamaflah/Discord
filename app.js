@@ -74,6 +74,69 @@ function randomResource() {
     return resources[Math.floor(Math.random() * resources.length)];
 }
 
+function createBoard() {
+    const tiles = [];
+    const resources = [
+        'wood', 'wood', 'wood', 'wood',
+        'brick', 'brick', 'brick',
+        'sheep', 'sheep', 'sheep', 'sheep',
+        'wheat', 'wheat', 'wheat', 'wheat',
+        'ore', 'ore', 'ore',
+        'desert',
+    ];
+    const tokens = [2, 3, 3, 4, 4, 5, 5, 6, 6, 8, 8, 9, 9, 10, 10, 11, 11, 12];
+
+    resources.sort(() => Math.random() - 0.5);
+    tokens.sort(() => Math.random() - 0.5);
+
+    let tokenIndex = 0;
+    resources.forEach(resource => {
+        if (resource === 'desert') {
+            tiles.push({ resource, number: null });
+        } else {
+            tiles.push({ resource, number: tokens[tokenIndex] });
+            tokenIndex += 1;
+        }
+    });
+
+    return { tiles };
+}
+
+function tileLabel(tile, highlightNumber) {
+    const icons = {
+        wood: '🌲',
+        brick: '🧱',
+        wheat: '🌾',
+        sheep: '🐑',
+        ore: '🪨',
+        desert: '🏜️',
+    };
+    const number = tile.number ? tile.number.toString().padStart(2, ' ') : '  ';
+    const base = `${icons[tile.resource]}${number}`;
+    if (tile.number && highlightNumber && tile.number === highlightNumber) {
+        return `*${base}*`;
+    }
+    return base;
+}
+
+function renderBoard(game) {
+    if (!game.board?.tiles?.length) return 'Board not generated.';
+    const tiles = game.board.tiles;
+    const rows = [
+        [0, 1, 2],
+        [3, 4, 5, 6],
+        [7, 8, 9, 10, 11],
+        [12, 13, 14, 15],
+        [16, 17, 18],
+    ];
+    const indents = ['      ', '   ', '', '   ', '      '];
+    const lines = rows.map((row, index) => {
+        const parts = row.map(tileIndex => tileLabel(tiles[tileIndex], game.lastRoll));
+        return `${indents[index]}${parts.join('  ')}`;
+    });
+    return lines.join('\n');
+}
+
 function canAfford(resources, cost) {
     return Object.keys(cost).every(key => resources[key] >= cost[key]);
 }
@@ -202,6 +265,7 @@ client.on('interactionCreate', async interaction => {
                 round: 0,
                 lastRoll: null,
                 turnRolled: false,
+                board: createBoard(),
                 createdAt: new Date().toISOString(),
                 startedAt: null,
             };
@@ -391,6 +455,17 @@ client.on('interactionCreate', async interaction => {
             const lastRoll = game.lastRoll ?? 'none';
             const header = `Status: ${game.status}. Players: ${game.players.length}/6. Round: ${game.round}. Current: ${current}. Last roll: ${lastRoll}.`;
             await interaction.reply([header, ...statusLines].join('\n'));
+            return;
+        }
+
+        if (subcommand === 'board') {
+            if (!game) {
+                await interaction.reply('No game found. Create one with /catan create.');
+                return;
+            }
+            const boardText = renderBoard(game);
+            const header = `Board view (last roll: ${game.lastRoll ?? 'none'})`;
+            await interaction.reply(`\`\`\`\n${header}\n${boardText}\n\`\`\``);
             return;
         }
 

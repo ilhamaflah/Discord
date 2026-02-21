@@ -5,6 +5,7 @@ import { Client, GatewayIntentBits, REST, Routes, userMention } from 'discord.js
 import { commands } from './commands.js';
 import express from 'express';
 import {
+    handleMusicAutocomplete,
     handleMusicCommand,
     handleMusicComponentInteraction,
     handleVoiceStateUpdate,
@@ -15,7 +16,6 @@ import { handleCatanCommand, handleCatanComponentInteraction } from './catan.js'
 // --- App bootstrap ---
 const app = express();
 dotenv.config();
-//const config = require("./config/config");
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 initializeMusic(client);
 
@@ -24,20 +24,12 @@ app.set('port', 3000);
 app.listen(app.get('port'), function() {
     console.log('Server started on port ' + app.get('port'));
 });
-//client.login(process.env.BOT_TOKEN);
-//OR
-//client.login(config.TOD_BOT.TOKEN);
-//client.disconnect();
 
 // --- External API helpers ---
-function getQuote() {
-    return fetch("https://zenquotes.io/api/random")
-        .then(res => {
-            return res.json();
-        })
-        .then(data => {
-            return data[0]["q"] + " -" + data[0]["a"];
-        });
+async function getQuote() {
+    const response = await fetch('https://zenquotes.io/api/random');
+    const data = await response.json();
+    return `${data[0].q} -${data[0].a}`;
 }
 
 // --- Slash command registration ---
@@ -80,6 +72,18 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
+    if (interaction.isAutocomplete()) {
+        if (interaction.commandName === 'music') {
+            try {
+                await handleMusicAutocomplete(interaction);
+            } catch (error) {
+                console.error('Music autocomplete failed:', error);
+                await interaction.respond([]);
+            }
+        }
+        return;
+    }
+
     if (!interaction.isChatInputCommand()) return;
 
     const stringifiedObject = JSON.stringify(interaction.options, null, 2);
@@ -88,7 +92,7 @@ client.on('interactionCreate', async interaction => {
 
     switch (interaction.commandName) {
         case 'inspire':
-            await getQuote().then(quote => interaction.reply(quote));
+            await interaction.reply(await getQuote());
             return;
         case 'ping':
             await interaction.reply('Pong!');
@@ -173,5 +177,6 @@ client.on('voiceStateUpdate', (oldState, newState) => {
     }
 });
 
-client.login(process.env.BOT_TOKEN).then(r =>
-console.log("Login Successful " + r));
+client.login(process.env.BOT_TOKEN)
+    .then(r => console.log(`Login successful ${r}`))
+    .catch(error => console.error('Login failed:', error));

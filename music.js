@@ -1,17 +1,21 @@
-import { randomUUID } from 'node:crypto';
+﻿import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
 import { Connectors, Manager } from 'moonlink.js';
 
 const MAX_PLAYLIST_ITEMS = 50;
 const MAX_QUEUE_DISPLAY_ITEMS = 20;
 const MAX_REMOVE_BUTTON_ITEMS = 10;
+const MAX_AUTOCOMPLETE_OPTIONS = 25;
 const PLAY_CHOICE_ITEMS = 5;
 const PLAY_SELECTION_TTL_MS = 2 * 60 * 1000;
+const NOW_PLAYING_BAR_SIZE = 12;
 
 let manager = null;
 const pendingPlaySelections = new Map();
+const announceOnNextTrackStart = new Set();
 
+// --- Configuration and diagnostics ---
 function isMusicDebug() {
     const value = process.env.MUSIC_DEBUG;
     return value === '1' || value === 'true';
@@ -60,6 +64,7 @@ function buildNodeConfig() {
     };
 }
 
+// --- Track formatting and compact card rendering ---
 function formatTrack(track) {
     if (!track) return 'Unknown track';
     return track.title || track.uri || 'Unknown track';
@@ -73,12 +78,257 @@ function formatDuration(ms) {
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-function formatQueuedMessage(track) {
-    const title = formatTrack(track);
-    if (track?.uri) {
-        return `Queued: ${title}\nURL: ${track.uri}`;
+function formatRequester(track) {
+    const requester = track?.requester;
+    if (!requester) return 'Unknown';
+    return requester.globalName || requester.displayName || requester.username || requester.tag || 'Unknown';
+}
+
+function buildProgressBar(positionMs, durationMs, size = NOW_PLAYING_BAR_SIZE) {
+    if (!Number.isFinite(durationMs) || durationMs <= 0) return 'LIVE';
+    const ratio = Math.max(0, Math.min(1, positionMs / durationMs));
+    const filled = Math.round(ratio * size);
+    return `${'='.repeat(filled)}${'-'.repeat(Math.max(0, size - filled))}`;
+}
+
+function extractYouTubeVideoId(uri) {
+    if (!uri) return null;
+    try {
+        const parsed = new URL(uri);
+        if (parsed.hostname === 'youtu.be') {
+            const id = parsed.pathname.replace(/^\/+/, '').trim();
+            return id || null;
+        }
+        if (parsed.hostname.endsWith('youtube.com')) {
+            const id = parsed.searchParams.get('v');
+            return id || null;
+        }
+    } catch {
+        return null;
     }
-    return `Queued: ${title}`;
+    return null;
+}
+
+function resolveTrackThumbnail(track) {
+    const direct = track?.artworkUrl || track?.thumbnail || track?.pluginInfo?.artworkUrl;
+    if (typeof direct === 'string' && direct.trim().length > 0) {
+        return direct.trim();
+    }
+
+    const youtubeId = extractYouTubeVideoId(track?.uri);
+    if (youtubeId) {
+        return `https://img.youtube.com/vi/${youtubeId}/mqdefault.jpg`;
+    }
+
+    return null;
+}
+
+function buildNowPlayingPayload(player, options = {}) {
+    const header = options.header || 'Now Playing';
+    const includeQueuePreview = Boolean(options.includeQueuePreview);
+    const queuePreviewLimit = Number.isFinite(options.queuePreviewLimit)
+        ? Math.max(0, Math.trunc(options.queuePreviewLimit))
+        : 5;
+
+    const track = player?.current;
+    if (!track) {
+        return 'Nothing is playing.';
+    }
+
+    const durationMs = Number.isFinite(track.duration) ? track.duration : 0;
+    const rawPositionMs = Number.isFinite(player.position) ? player.position : 0;
+    const positionMs = durationMs > 0
+        ? Math.min(Math.max(0, rawPositionMs), durationMs)
+        : Math.max(0, rawPositionMs);
+
+    const progress = durationMs > 0
+        ? `\`${buildProgressBar(positionMs, durationMs)}\` ${formatDuration(positionMs)} / ${formatDuration(durationMs)}`
+        : 'live';
+
+    const lines = [
+        `**${formatTrack(track)}**`,
+        `Progress: ${progress}`,
+        `Requested by: ${formatRequester(track)}`,
+        `Up next: ${player.queue.size} track(s)${player.paused ? ' (paused)' : ''}`,
+    ];
+
+    if (includeQueuePreview && player.queue.size > 0 && queuePreviewLimit > 0) {
+        const visible = player.queue.tracks.slice(0, queuePreviewLimit);
+        lines.push('');
+        lines.push('Queue:');
+        lines.push(...visible.map((queuedTrack, index) => `${index + 1}. ${formatTrack(queuedTrack)}`));
+        if (player.queue.size > visible.length) {
+            lines.push(`...and ${player.queue.size - visible.length} more`);
+        }
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(0x0fa8a2)
+        .setAuthor({ name: header })
+        .setDescription(lines.join('\n'));
+
+    const thumbnail = resolveTrackThumbnail(track);
+    if (thumbnail) {
+        embed.setThumbnail(thumbnail);
+    }
+
+    return { embeds: [embed] };
+}
+
+// --- Queue pagination and queue card rendering ---
+function getQueuePageCount(player) {
+    return Math.max(1, Math.ceil(player.queue.size / MAX_QUEUE_DISPLAY_ITEMS));
+}
+
+function buildQueuePageComponents(guildId, userId, page, totalPages) {
+    if (totalPages <= 1) return [];
+
+    const previousPage = Math.max(1, page - 1);
+    const nextPage = Math.min(totalPages, page + 1);
+
+    return [
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`music_queue_page:${guildId}:${userId}:${previousPage}`)
+                .setLabel('Previous')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(page <= 1),
+            new ButtonBuilder()
+                .setCustomId(`music_queue_page:${guildId}:${userId}:${page}`)
+                .setLabel(`Page ${page}/${totalPages}`)
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(true),
+            new ButtonBuilder()
+                .setCustomId(`music_queue_page:${guildId}:${userId}:${nextPage}`)
+                .setLabel('Next')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(page >= totalPages),
+        ),
+    ];
+}
+
+function buildQueueMessage(player, options = {}) {
+    const requestedPage = Number.isFinite(options.page) ? Math.trunc(options.page) : 1;
+    const guildId = options.guildId;
+    const userId = options.userId;
+    const enableNavigation = Boolean(options.enableNavigation);
+
+    const nowPlaying = player.current;
+    const upcoming = player.queue.tracks;
+
+    if (!nowPlaying && upcoming.length === 0) {
+        return 'Queue is empty.';
+    }
+
+    const totalPages = getQueuePageCount(player);
+    const page = Math.min(Math.max(1, requestedPage), totalPages);
+    const startIndex = (page - 1) * MAX_QUEUE_DISPLAY_ITEMS;
+    const visible = upcoming.slice(startIndex, startIndex + MAX_QUEUE_DISPLAY_ITEMS);
+
+    let payload;
+    if (nowPlaying) {
+        payload = buildNowPlayingPayload(player, {
+            header: 'Queue',
+        });
+    } else {
+        const lines = ['No track is currently playing.', `Queued: ${upcoming.length} track(s)`];
+        const embed = new EmbedBuilder()
+            .setColor(0x0fa8a2)
+            .setAuthor({ name: 'Queue' })
+            .setDescription(lines.join('\n'));
+
+        const queueThumbnail = resolveTrackThumbnail(upcoming[0]);
+        if (queueThumbnail) {
+            embed.setThumbnail(queueThumbnail);
+        }
+
+        payload = { embeds: [embed] };
+    }
+
+    if (typeof payload === 'string') {
+        return payload;
+    }
+
+    const queueLines = [
+        '',
+        `Queue Page ${page}/${totalPages}`,
+    ];
+
+    if (visible.length > 0) {
+        queueLines.push(...visible.map((track, index) => `${startIndex + index + 1}. ${formatTrack(track)}`));
+    } else {
+        queueLines.push('No queued tracks.');
+    }
+
+    const embed = payload.embeds[0];
+    const currentDescription = embed?.data?.description || '';
+    embed.setDescription(`${currentDescription}\n${queueLines.join('\n')}`.trim());
+
+    const queueComponents = enableNavigation && guildId && userId
+        ? buildQueuePageComponents(guildId, userId, page, totalPages)
+        : [];
+
+    if (queueComponents.length > 0) {
+        return withComponents(payload, queueComponents);
+    }
+
+    return payload;
+}
+
+// --- Response composition helpers ---
+function buildMusicCardResponse(player, content, options = {}) {
+    const payload = buildNowPlayingPayload(player, options);
+    if (typeof payload === 'string') {
+        return content;
+    }
+    return { ...payload, content };
+}
+
+function withComponents(payload, components) {
+    if (typeof payload === 'string') {
+        return { content: payload, components };
+    }
+    return { ...payload, components };
+}
+
+// --- Event payload helpers ---
+function getTrackEndReason(endData) {
+    if (typeof endData === 'string') return endData.toLowerCase();
+    if (!endData || typeof endData !== 'object') return '';
+
+    if (typeof endData.reason === 'string') return endData.reason.toLowerCase();
+    if (typeof endData.type === 'string') return endData.type.toLowerCase();
+    if (endData.data && typeof endData.data.reason === 'string') return endData.data.reason.toLowerCase();
+    return '';
+}
+
+async function sendNowPlayingCardToPlayerChannel(client, player, options = {}) {
+    const channelId = player?.textChannelId;
+    if (!channelId) return;
+
+    const channel = client.channels.cache.get(channelId)
+        ?? await client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !channel.isTextBased()) {
+        return;
+    }
+
+    const payload = buildNowPlayingPayload(player, options);
+    if (typeof payload === 'string') {
+        return;
+    }
+
+    await channel.send(payload);
+}
+
+// --- Search/selection helpers ---
+function formatAutocompleteTrackName(index, track) {
+    const prefix = `${index}. `;
+    const maxTitleLength = 100 - prefix.length;
+    let title = formatTrack(track).replace(/\s+/g, ' ').trim();
+    if (title.length > maxTitleLength) {
+        title = `${title.slice(0, Math.max(1, maxTitleLength - 1))}...`;
+    }
+    return `${prefix}${title}`;
 }
 
 function isLikelyUrl(input) {
@@ -199,6 +449,58 @@ function buildRemoveSelectionComponents(guildId, userId, count) {
     return rows;
 }
 
+function buildBumpSelectionMessage(player, limit = MAX_REMOVE_BUTTON_ITEMS) {
+    if (!player || player.queue.size === 0) {
+        return 'Queue is empty.';
+    }
+
+    const visible = player.queue.tracks.slice(0, limit);
+    const lines = ['Select a queue number to move next:', ''];
+    lines.push(...visible.map((track, index) => `${index + 1}. ${formatTrack(track)}`));
+
+    if (player.queue.size > visible.length) {
+        lines.push('');
+        lines.push(`Showing first ${visible.length} of ${player.queue.size} queued tracks.`);
+    }
+
+    return lines.join('\n');
+}
+
+function buildBumpSelectionComponents(guildId, userId, count) {
+    const rows = [];
+    let currentRow = [];
+
+    for (let i = 0; i < count; i += 1) {
+        currentRow.push(
+            new ButtonBuilder()
+                .setCustomId(`music_bump_pick:${guildId}:${userId}:${i + 1}`)
+                .setLabel(String(i + 1))
+                .setStyle(ButtonStyle.Primary),
+        );
+
+        if (currentRow.length === 5) {
+            rows.push(new ActionRowBuilder().addComponents(currentRow));
+            currentRow = [];
+        }
+    }
+
+    if (currentRow.length > 0) {
+        rows.push(new ActionRowBuilder().addComponents(currentRow));
+    }
+
+    rows.push(
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`music_bump_cancel:${guildId}:${userId}`)
+                .setLabel('Cancel')
+                .setStyle(ButtonStyle.Danger),
+        ),
+    );
+
+    return rows;
+}
+
+// --- Player/session lifecycle helpers ---
 async function respond(interaction, content) {
     if (interaction.deferred) {
         return interaction.editReply(content);
@@ -291,37 +593,7 @@ async function startPlaybackIfIdle(player) {
     }
 }
 
-function buildQueueMessage(player) {
-    const nowPlaying = player.current;
-    const upcoming = player.queue.tracks;
-
-    if (!nowPlaying && upcoming.length === 0) {
-        return 'Queue is empty.';
-    }
-
-    const lines = [];
-
-    if (nowPlaying) {
-        if (nowPlaying.uri) {
-            lines.push(`Now: ${formatTrack(nowPlaying)} (${nowPlaying.uri})`);
-        } else {
-            lines.push(`Now: ${formatTrack(nowPlaying)}`);
-        }
-    }
-
-    if (upcoming.length > 0) {
-        lines.push('Up next:');
-        const visible = upcoming.slice(0, MAX_QUEUE_DISPLAY_ITEMS);
-        lines.push(...visible.map((track, index) => `${index + 1}. ${formatTrack(track)}`));
-
-        if (upcoming.length > visible.length) {
-            lines.push(`...and ${upcoming.length - visible.length} more`);
-        }
-    }
-
-    return lines.join('\n');
-}
-
+// --- Music manager initialization and event wiring ---
 export function initializeMusic(client) {
     if (manager) return manager;
 
@@ -377,6 +649,26 @@ export function initializeMusic(client) {
 
     manager.on('trackStart', (player, track) => {
         debugLog(`Track started in guild ${player.guildId}: ${formatTrack(track)}`);
+        if (!announceOnNextTrackStart.has(player.guildId)) {
+            return;
+        }
+
+        announceOnNextTrackStart.delete(player.guildId);
+        sendNowPlayingCardToPlayerChannel(client, player, { header: 'Now Playing' }).catch(error => {
+            debugLog(`Failed to send auto now playing card in guild ${player.guildId}.`, error);
+        });
+    });
+
+    manager.on('trackEnd', (player, track, endData) => {
+        const reason = getTrackEndReason(endData);
+        debugLog(`Track ended in guild ${player.guildId}: ${formatTrack(track)} (${reason || 'unknown'})`);
+
+        if (reason === 'finished' && player.queue.size > 0) {
+            announceOnNextTrackStart.add(player.guildId);
+            return;
+        }
+
+        announceOnNextTrackStart.delete(player.guildId);
     });
 
     manager.on('trackException', (player, track, exception) => {
@@ -386,12 +678,14 @@ export function initializeMusic(client) {
 
     manager.on('queueEnd', player => {
         debugLog(`Queue ended in guild ${player.guildId}.`);
+        announceOnNextTrackStart.delete(player.guildId);
     });
 
     manager.use(new Connectors.DiscordJs(), client);
     return manager;
 }
 
+// --- Voice channel lifecycle hooks ---
 export function handleVoiceStateUpdate(oldState, newState) {
     if (!manager) return;
 
@@ -416,6 +710,7 @@ export function handleVoiceStateUpdate(oldState, newState) {
     });
 }
 
+// --- Component interaction handlers ---
 async function handlePlayComponent(interaction) {
     const pickMatch = interaction.customId.match(/^music_play_pick:([^:]+):(\d+)$/);
     const cancelMatch = interaction.customId.match(/^music_play_cancel:([^:]+)$/);
@@ -480,13 +775,66 @@ async function handlePlayComponent(interaction) {
         await startPlaybackIfIdle(player);
 
         pendingPlaySelections.delete(selectionId);
-        await interaction.update({ content: formatQueuedMessage(selectedTrack), components: [] });
+        const payload = buildMusicCardResponse(
+            player,
+            `Queued: ${formatTrack(selectedTrack)}`,
+            { includeQueuePreview: true, queuePreviewLimit: 5 },
+        );
+        await interaction.update(withComponents(payload, []));
     } catch (error) {
         pendingPlaySelections.delete(selectionId);
         const message = error instanceof Error ? error.message : 'Failed to queue selected track.';
         await interaction.update({ content: message, components: [] });
     }
 
+    return true;
+}
+
+async function handleQueueComponent(interaction) {
+    const pageMatch = interaction.customId.match(/^music_queue_page:([^:]+):([^:]+):(\d+)$/);
+    if (!pageMatch) {
+        return false;
+    }
+
+    const guildId = pageMatch[1];
+    const userId = pageMatch[2];
+    const requestedPage = Number.parseInt(pageMatch[3], 10);
+
+    if (interaction.guildId !== guildId || interaction.user.id !== userId) {
+        await interaction.reply({
+            content: 'Only the user who opened this queue view can use these buttons.',
+            ephemeral: true,
+        });
+        return true;
+    }
+
+    const player = manager.players.get(guildId);
+    if (!player || (!player.current && player.queue.size === 0)) {
+        await interaction.update({
+            content: 'Queue is empty.',
+            embeds: [],
+            components: [],
+        });
+        return true;
+    }
+
+    const payload = buildQueueMessage(player, {
+        page: requestedPage,
+        guildId,
+        userId,
+        enableNavigation: true,
+    });
+
+    if (typeof payload === 'string') {
+        await interaction.update({
+            content: payload,
+            embeds: [],
+            components: [],
+        });
+        return true;
+    }
+
+    await interaction.update(payload);
     return true;
 }
 
@@ -545,24 +893,157 @@ async function handleRemoveComponent(interaction) {
     }
 
     const count = Math.min(player.queue.size, MAX_REMOVE_BUTTON_ITEMS);
-    await interaction.update({
-        content: `Removed: ${formatTrack(removedTrack)}\n\n${buildRemoveSelectionMessage(player, count)}`,
-        components: buildRemoveSelectionComponents(guildId, userId, count),
-    });
+    const payload = buildMusicCardResponse(
+        player,
+        `Removed: ${formatTrack(removedTrack)}\n\n${buildRemoveSelectionMessage(player, count)}`,
+        { header: 'Queue' },
+    );
+    await interaction.update(withComponents(payload, buildRemoveSelectionComponents(guildId, userId, count)));
 
     return true;
 }
 
+async function handleBumpComponent(interaction) {
+    const pickMatch = interaction.customId.match(/^music_bump_pick:([^:]+):([^:]+):(\d+)$/);
+    const cancelMatch = interaction.customId.match(/^music_bump_cancel:([^:]+):([^:]+)$/);
+
+    if (!pickMatch && !cancelMatch) {
+        return false;
+    }
+
+    const guildId = pickMatch ? pickMatch[1] : cancelMatch[1];
+    const userId = pickMatch ? pickMatch[2] : cancelMatch[2];
+
+    if (interaction.guildId !== guildId || interaction.user.id !== userId) {
+        await interaction.reply({
+            content: 'Only the user who opened this bump menu can use it.',
+            ephemeral: true,
+        });
+        return true;
+    }
+
+    if (cancelMatch) {
+        await interaction.update({ content: 'Bump selection canceled.', components: [] });
+        return true;
+    }
+
+    const player = manager.players.get(guildId);
+    if (!player || player.queue.size === 0) {
+        await interaction.update({ content: 'Queue is empty.', components: [] });
+        return true;
+    }
+
+    const position = Number.parseInt(pickMatch[3], 10);
+    if (!Number.isFinite(position) || position < 1 || position > player.queue.size) {
+        const count = Math.min(player.queue.size, MAX_REMOVE_BUTTON_ITEMS);
+        await interaction.update({
+            content: `Invalid position. Choose 1-${player.queue.size}.\n\n${buildBumpSelectionMessage(player, count)}`,
+            components: buildBumpSelectionComponents(guildId, userId, count),
+        });
+        return true;
+    }
+
+    const count = Math.min(player.queue.size, MAX_REMOVE_BUTTON_ITEMS);
+    if (position === 1) {
+        const alreadyNext = player.queue.get(0);
+        const payload = buildMusicCardResponse(
+            player,
+            `That track is already next: ${formatTrack(alreadyNext)}\n\n${buildBumpSelectionMessage(player, count)}`,
+            { header: 'Queue' },
+        );
+        await interaction.update(withComponents(payload, buildBumpSelectionComponents(guildId, userId, count)));
+        return true;
+    }
+
+    const movedTrack = player.queue.remove(position - 1);
+    if (!movedTrack) {
+        await interaction.update({ content: 'Failed to move that track.', components: [] });
+        return true;
+    }
+
+    player.queue.unshift(movedTrack);
+
+    const refreshedCount = Math.min(player.queue.size, MAX_REMOVE_BUTTON_ITEMS);
+    if (refreshedCount <= 1) {
+        const payload = buildMusicCardResponse(
+            player,
+            `Moved to next: ${formatTrack(movedTrack)}\nNo other queued tracks to reorder.`,
+        );
+        await interaction.update(withComponents(payload, []));
+        return true;
+    }
+
+    const payload = buildMusicCardResponse(
+        player,
+        `Moved to next: ${formatTrack(movedTrack)}\n\n${buildBumpSelectionMessage(player, refreshedCount)}`,
+        { header: 'Queue' },
+    );
+    await interaction.update(withComponents(payload, buildBumpSelectionComponents(guildId, userId, refreshedCount)));
+    return true;
+}
+
+// --- Public music interaction entrypoints ---
 export async function handleMusicComponentInteraction(interaction) {
     if (!manager) return false;
     if (!interaction.isButton()) return false;
     if (!interaction.customId.startsWith('music_')) return false;
 
+    const queueHandled = await handleQueueComponent(interaction);
+    if (queueHandled) return true;
+
     const playHandled = await handlePlayComponent(interaction);
     if (playHandled) return true;
 
     const removeHandled = await handleRemoveComponent(interaction);
-    return removeHandled;
+    if (removeHandled) return true;
+
+    const bumpHandled = await handleBumpComponent(interaction);
+    return bumpHandled;
+}
+
+export async function handleMusicAutocomplete(interaction) {
+    if (!manager) {
+        await interaction.respond([]);
+        return;
+    }
+
+    let subcommand;
+    try {
+        subcommand = interaction.options.getSubcommand();
+    } catch {
+        await interaction.respond([]);
+        return;
+    }
+
+    const focused = interaction.options.getFocused(true);
+    if ((subcommand !== 'remove' && subcommand !== 'bump') || focused.name !== 'position') {
+        await interaction.respond([]);
+        return;
+    }
+
+    const player = manager.players.get(interaction.guildId);
+    if (!player || player.queue.size === 0) {
+        await interaction.respond([]);
+        return;
+    }
+
+    const baseChoices = player.queue.tracks
+        .slice(0, MAX_AUTOCOMPLETE_OPTIONS)
+        .map((track, index) => ({
+            name: formatAutocompleteTrackName(index + 1, track),
+            value: index + 1,
+        }));
+
+    let choices = baseChoices;
+    if (typeof focused.value === 'number' && Number.isFinite(focused.value) && focused.value > 0) {
+        const search = String(Math.trunc(focused.value));
+        const filtered = baseChoices.filter(choice => String(choice.value).startsWith(search));
+        if (filtered.length > 0) {
+            choices = filtered;
+        }
+    }
+
+    await interaction.respond(choices.slice(0, MAX_AUTOCOMPLETE_OPTIONS));
 }
 
 export async function handleMusicCommand(interaction) {
@@ -627,7 +1108,14 @@ export async function handleMusicCommand(interaction) {
                     await startPlaybackIfIdle(player);
 
                     const playlistName = result.playlistInfo?.name || 'Playlist';
-                    await respond(interaction, `Queued ${tracks.length} tracks from playlist: ${playlistName}`);
+                    await respond(
+                        interaction,
+                        buildMusicCardResponse(
+                            player,
+                            `Queued ${tracks.length} tracks from playlist: ${playlistName}`,
+                            { includeQueuePreview: true, queuePreviewLimit: 5 },
+                        ),
+                    );
                     return;
                 }
 
@@ -650,7 +1138,14 @@ export async function handleMusicCommand(interaction) {
                 const track = result.tracks[0];
                 player.queue.add(track);
                 await startPlaybackIfIdle(player);
-                await respond(interaction, formatQueuedMessage(track));
+                await respond(
+                    interaction,
+                    buildMusicCardResponse(
+                        player,
+                        `Queued: ${formatTrack(track)}`,
+                        { includeQueuePreview: true, queuePreviewLimit: 5 },
+                    ),
+                );
             } catch (error) {
                 const message = error instanceof Error ? error.message : 'Failed to play this source.';
                 debugLog(`Play failed in guild ${interaction.guildId}.`, error);
@@ -672,7 +1167,7 @@ export async function handleMusicCommand(interaction) {
             }
 
             await player.pause();
-            await respond(interaction, 'Paused.');
+            await respond(interaction, buildMusicCardResponse(player, 'Paused.'));
             return;
         }
 
@@ -689,7 +1184,7 @@ export async function handleMusicCommand(interaction) {
             }
 
             await player.resume();
-            await respond(interaction, 'Resumed.');
+            await respond(interaction, buildMusicCardResponse(player, 'Resumed.'));
             return;
         }
 
@@ -711,12 +1206,30 @@ export async function handleMusicCommand(interaction) {
 
             if (!hasCurrent && hasQueued) {
                 await startPlaybackIfIdle(player);
-                await respond(interaction, 'Playing next track.');
+                await respond(
+                    interaction,
+                    buildMusicCardResponse(
+                        player,
+                        'Playing next track.',
+                        { includeQueuePreview: true, queuePreviewLimit: 5 },
+                    ),
+                );
                 return;
             }
 
             const skipped = await player.skip();
-            await respond(interaction, skipped ? 'Skipped.' : 'Failed to skip.');
+            if (!skipped) {
+                await respond(interaction, 'Failed to skip.');
+                return;
+            }
+            await respond(
+                interaction,
+                buildMusicCardResponse(
+                    player,
+                    'Skipped to next track.',
+                    { includeQueuePreview: true, queuePreviewLimit: 5 },
+                ),
+            );
             return;
         }
 
@@ -726,7 +1239,22 @@ export async function handleMusicCommand(interaction) {
                 await respond(interaction, 'Queue is empty.');
                 return;
             }
-            await respond(interaction, buildQueueMessage(player));
+            await respond(interaction, buildQueueMessage(player, {
+                page: 1,
+                guildId: interaction.guildId,
+                userId: interaction.user.id,
+                enableNavigation: true,
+            }));
+            return;
+        }
+
+        case 'nowplaying': {
+            const player = manager.players.get(interaction.guildId);
+            if (!player || !player.current) {
+                await respond(interaction, 'Nothing is playing.');
+                return;
+            }
+            await respond(interaction, buildNowPlayingPayload(player));
             return;
         }
 
@@ -755,6 +1283,63 @@ export async function handleMusicCommand(interaction) {
             return;
         }
 
+        case 'bump': {
+            const position = interaction.options.getInteger('position', false);
+            const player = manager.players.get(interaction.guildId);
+
+            if (!player || player.queue.size === 0) {
+                await respond(interaction, 'Queue is empty.');
+                return;
+            }
+
+            if (position !== null) {
+                if (position < 1 || position > player.queue.size) {
+                    await respond(interaction, `Invalid position. Choose 1-${player.queue.size}.`);
+                    return;
+                }
+
+                if (position === 1) {
+                    await respond(
+                        interaction,
+                        buildMusicCardResponse(
+                            player,
+                            `That track is already next: ${formatTrack(player.queue.get(0))}`,
+                        ),
+                    );
+                    return;
+                }
+
+                const movedTrack = player.queue.remove(position - 1);
+                if (!movedTrack) {
+                    await respond(interaction, 'Failed to move that track.');
+                    return;
+                }
+
+                player.queue.unshift(movedTrack);
+                await respond(
+                    interaction,
+                    buildMusicCardResponse(
+                        player,
+                        `Moved to next: ${formatTrack(movedTrack)}`,
+                        { includeQueuePreview: true, queuePreviewLimit: 5 },
+                    ),
+                );
+                return;
+            }
+
+            if (player.queue.size === 1) {
+                await respond(interaction, `Only one track in queue; it is already next: ${formatTrack(player.queue.get(0))}`);
+                return;
+            }
+
+            const count = Math.min(player.queue.size, MAX_REMOVE_BUTTON_ITEMS);
+            await respond(interaction, {
+                content: buildBumpSelectionMessage(player, count),
+                components: buildBumpSelectionComponents(interaction.guildId, interaction.user.id, count),
+            });
+            return;
+        }
+
         case 'remove': {
             const position = interaction.options.getInteger('position', false);
             const player = manager.players.get(interaction.guildId);
@@ -776,7 +1361,7 @@ export async function handleMusicCommand(interaction) {
                     return;
                 }
 
-                await respond(interaction, `Removed: ${formatTrack(removedTrack)}`);
+                await respond(interaction, buildMusicCardResponse(player, `Removed: ${formatTrack(removedTrack)}`));
                 return;
             }
 
@@ -792,3 +1377,4 @@ export async function handleMusicCommand(interaction) {
             await respond(interaction, 'Unknown command.');
     }
 }
+

@@ -574,6 +574,7 @@ function placeRoad(game, player, edgeId, free = false, setupVertexId = null) {
     return null;
 }
 
+// --- Setup and turn progression ---
 function setupSnakeOrder(order) {
     return [...order, ...[...order].reverse()];
 }
@@ -649,6 +650,7 @@ function autoDiscardOnSeven(game) {
     return discarded;
 }
 
+// --- Awards, scoring, and endgame checks ---
 function getAdjacentVictimCandidates(game, hexId, robberPlayerId) {
     const hex = game.board.hexes.find(h => h.id === hexId);
     if (!hex) return [];
@@ -773,22 +775,37 @@ function maybeFinishGame(game) {
     return null;
 }
 
+// --- Board rendering and display helpers ---
 function getPlayerMarker(game, playerId) {
     const index = game.players.findIndex(player => player.id === playerId);
     return PLAYER_MARKERS[index] ?? PLAYER_MARKERS[PLAYER_MARKERS.length - 1];
 }
 
+function idNumber(id) {
+    const parsed = Number.parseInt(String(id ?? '').slice(1), 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortIds(ids) {
+    return [...ids].sort((a, b) => idNumber(a) - idNumber(b));
+}
+
+function compactIdList(ids, prefix) {
+    const values = sortIds(ids).map(id => idNumber(id));
+    return `${prefix}[${values.join(',')}]`;
+}
+
 function formatPointsLine(game, player) {
     const marker = getPlayerMarker(game, player.id);
-    const longestRoad = game.awards.longestRoadOwnerId === player.id ? ' 🛣️LongestRoad' : '';
-    const largestArmy = game.awards.largestArmyOwnerId === player.id ? ' 🛡️LargestArmy' : '';
-    return `${marker} ${player.name}: ${getPlayerPoints(game, player)} VP | 🏠${player.settlements.length} 🏰${player.cities.length} 🛤️${player.roads.length}${longestRoad}${largestArmy}`;
+    const longestRoad = game.awards.longestRoadOwnerId === player.id ? ' LR' : '';
+    const largestArmy = game.awards.largestArmyOwnerId === player.id ? ' LA' : '';
+    return `${marker} ${player.name}: ${getPlayerPoints(game, player)} VP | settlements:${player.settlements.length} cities:${player.cities.length} roads:${player.roads.length}${longestRoad}${largestArmy}`;
 }
 
 function formatHexCell(game, hex) {
     const icon = RESOURCE_ICON[hex.resource] ?? '?';
     const token = hex.number === null ? '--' : String(hex.number).padStart(2, '0');
-    const robber = hex.id === game.board.robberHexId ? '🦹' : '  ';
+    const robber = hex.id === game.board.robberHexId ? '*' : ' ';
     return `${robber}${hex.id}${icon}${token}`;
 }
 
@@ -808,21 +825,61 @@ function renderHexRows(game) {
 function renderPlayerPlacements(game) {
     return game.players.map(player => {
         const marker = getPlayerMarker(game, player.id);
-        const settlementList = player.settlements.map(v => `${BUILDING_ICON.settlement}${v}`).join(' ') || '-';
-        const cityList = player.cities.map(v => `${BUILDING_ICON.city}${v}`).join(' ') || '-';
-        return `${marker} ${player.name} | settlements: ${settlementList} | cities: ${cityList}`;
+        const settlementList = sortIds(player.settlements).map(v => `${BUILDING_ICON.settlement}${v}`).join(' ') || '-';
+        const cityList = sortIds(player.cities).map(v => `${BUILDING_ICON.city}${v}`).join(' ') || '-';
+        const roadList = sortIds(player.roads).join(' ') || '-';
+        return `${marker} ${player.name} | settlements: ${settlementList} | cities: ${cityList} | roads: ${roadList}`;
     }).join('\n');
 }
 
-function renderRoadOwnership(game) {
-    const lines = Object.values(game.board.edges)
-        .filter(edge => edge.ownerId)
-        .map(edge => {
-            const marker = getPlayerMarker(game, edge.ownerId);
-            return `${marker}${edge.id}(${edge.vertexIds.join('-')})`;
-        })
-        .join('\n');
-    return lines || 'none';
+function renderHexPlacementGuide(game) {
+    const rows = [-2, -1, 0, 1, 2];
+    const lines = ['PLACEMENT GUIDE (settlement/city => V#, road => E#)', ''];
+
+    rows.forEach(r => {
+        lines.push(`row ${r}:`);
+        const rowHexes = game.board.hexes
+            .filter(hex => hex.r === r)
+            .sort((a, b) => a.q - b.q);
+
+        rowHexes.forEach(hex => {
+            const occupiedVertices = sortIds(hex.vertexIds)
+                .map(vertexId => {
+                    const building = getVertex(game, vertexId)?.building;
+                    if (!building) return null;
+                    const ownerMarker = getPlayerMarker(game, building.ownerId);
+                    const kind = building.type === 'city' ? 'C' : 'S';
+                    return `${vertexId}${ownerMarker}${kind}`;
+                })
+                .filter(Boolean)
+                .join(' ');
+
+            const occupiedEdges = sortIds(hex.edgeIds)
+                .map(edgeId => {
+                    const ownerId = getEdge(game, edgeId)?.ownerId;
+                    if (!ownerId) return null;
+                    return `${edgeId}${getPlayerMarker(game, ownerId)}R`;
+                })
+                .filter(Boolean)
+                .join(' ');
+
+            const line = [
+                `${formatHexCell(game, hex)}`,
+                compactIdList(hex.vertexIds, 'V'),
+                compactIdList(hex.edgeIds, 'E'),
+            ];
+
+            if (occupiedVertices || occupiedEdges) {
+                line.push(`occ:${occupiedVertices || '-'} ${occupiedEdges || '-'}`);
+            }
+
+            lines.push(`- ${line.join(' | ')}`);
+        });
+
+        lines.push('');
+    });
+
+    return lines.join('\n').trimEnd();
 }
 
 function boardLegend(game) {
@@ -835,23 +892,25 @@ function boardLegend(game) {
         '',
         renderHexRows(game),
         '',
-        'Legend: 🌲 wood | 🧱 brick | 🌾 wheat | 🐑 sheep | ⛰️ ore | 🏜️ desert | 🦹 robber',
+        'Legend: wood | brick | wheat | sheep | ore | desert | * robber',
+        'Tip: /catan place type:settlement at:V12  or  /catan place type:road at:E34',
         `Players: ${markerLegend}`,
         '',
         'Placements:',
         renderPlayerPlacements(game),
         '',
-        'Roads:',
-        renderRoadOwnership(game),
+        renderHexPlacementGuide(game),
     ].join('\n');
 }
 
+// --- Trade component builders ---
 function createTradeButtons(guildId, offerId) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`catan_trade_accept:${guildId}:${offerId}`).setLabel('Accept').setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId(`catan_trade_reject:${guildId}:${offerId}`).setLabel('Reject/Cancel').setStyle(ButtonStyle.Danger)
     );
 }
+// --- Slash command handlers: lobby/setup ---
 async function handleCreate(interaction, state, guildId, userId, displayName) {
     const existing = getGame(state, guildId);
     if (existing && existing.phase !== PHASE.FINISHED) {
@@ -958,6 +1017,7 @@ async function handleStart(interaction, state, guildId) {
     await interaction.reply('Game started. Each player rolls once with /catan roll to determine first turn order.');
 }
 
+// --- Slash command handlers: turn actions ---
 async function handleRoll(interaction, state, guildId, userId) {
     const game = getGame(state, guildId);
     if (!game) {
@@ -1492,6 +1552,7 @@ async function handleEndTurn(interaction, state, guildId, userId) {
     await interaction.reply(`Turn ended. It is now ${getPlayer(game, game.turn.currentPlayerId)?.name}'s turn. Use /catan roll.`);
 }
 
+// --- Slash command handlers: status and utility ---
 async function handleSetupStatus(interaction, state, guildId) {
     const game = getGame(state, guildId);
     if (!game) {
@@ -1615,13 +1676,45 @@ async function handleStatus(interaction, state, guildId) {
     await interaction.reply(lines.join('\n'));
 }
 
+// --- Long message splitting/output helpers ---
+function splitLongText(text, maxLen = 1800) {
+    const lines = text.split('\n');
+    const chunks = [];
+    let current = [];
+    let currentLen = 0;
+
+    lines.forEach(line => {
+        const nextLen = currentLen + line.length + 1;
+        if (nextLen > maxLen && current.length > 0) {
+            chunks.push(current.join('\n'));
+            current = [line];
+            currentLen = line.length + 1;
+            return;
+        }
+        current.push(line);
+        currentLen = nextLen;
+    });
+
+    if (current.length > 0) {
+        chunks.push(current.join('\n'));
+    }
+
+    return chunks;
+}
+
 async function handleBoard(interaction, state, guildId) {
     const game = getGame(state, guildId);
     if (!game?.board) {
         await interaction.reply('Board not available yet. Start game with /catan start.');
         return;
     }
-    await interaction.reply(`\`\`\`\n${boardLegend(game)}\n\`\`\``);
+    const chunks = splitLongText(boardLegend(game), 1800);
+    const first = chunks[0] || 'Board unavailable.';
+    await interaction.reply(`\`\`\`\n${first}\n\`\`\``);
+
+    for (let i = 1; i < chunks.length; i += 1) {
+        await interaction.followUp(`\`\`\`\n${chunks[i]}\n\`\`\``);
+    }
 }
 
 async function handleHand(interaction, state, guildId, userId) {
@@ -1647,6 +1740,7 @@ async function handleHand(interaction, state, guildId, userId) {
     });
 }
 
+// --- Public catan command/component dispatchers ---
 export async function handleCatanCommand(interaction) {
     const state = loadState();
     const subcommand = interaction.options.getSubcommand();
@@ -1677,6 +1771,7 @@ export async function handleCatanCommand(interaction) {
     }
 }
 
+// Handles trade accept/reject buttons for the active offer.
 export async function handleCatanComponentInteraction(interaction) {
     if (!interaction.isButton()) return false;
     if (!interaction.customId.startsWith('catan_trade_')) return false;

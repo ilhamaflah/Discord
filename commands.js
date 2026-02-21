@@ -1,3 +1,4 @@
+// Slash command definitions grouped by feature area.
 export const commands = [
     // Utility
     {
@@ -336,19 +337,40 @@ export const commands = [
             },
             {
                 type: 1,
+                name: 'nowplaying',
+                description: 'Show the currently playing track in compact view',
+            },
+            {
+                type: 1,
                 name: 'purge',
                 description: 'Clear the full queue and stop playback',
             },
             {
                 type: 1,
-                name: 'remove',
-                description: 'Remove a track by number (or choose from buttons)',
+                name: 'bump',
+                description: 'Move a track to next using queue dropdown',
                 options: [
                     {
                         name: 'position',
-                        description: 'Queue number to remove (optional)',
+                        description: 'Queue track to move next',
                         type: 4,
-                        required: false,
+                        required: true,
+                        autocomplete: true,
+                        min_value: 1,
+                    },
+                ],
+            },
+            {
+                type: 1,
+                name: 'remove',
+                description: 'Remove a track by choosing from queue dropdown',
+                options: [
+                    {
+                        name: 'position',
+                        description: 'Queue track to remove',
+                        type: 4,
+                        required: true,
+                        autocomplete: true,
                         min_value: 1,
                     },
                 ],

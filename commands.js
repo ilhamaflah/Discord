@@ -61,6 +61,7 @@ export const commands = [
             { type: 1, name: 'create', description: 'Create a new lobby' },
             { type: 1, name: 'join', description: 'Join the lobby' },
             { type: 1, name: 'leave', description: 'Leave the lobby' },
+            { type: 1, name: 'disband', description: 'Vote to disband an ongoing game (all players must approve)' },
             { type: 1, name: 'start', description: 'Start setup order roll phase' },
             { type: 1, name: 'roll', description: 'Roll dice (setup order or turn roll)' },
             {
@@ -282,55 +283,75 @@ export const commands = [
 
     // Music
     {
-        name: 'join',
-        description: 'Join your voice channel',
-    },
-    {
-        name: 'leave',
-        description: 'Leave the voice channel',
-    },
-    {
-        name: 'play',
-        description: 'Play or queue from a URL, search query, or playlist',
+        name: 'music',
+        description: 'Music player commands',
         options: [
             {
-                name: 'source',
-                description: 'URL or search query',
-                type: 3,
-                required: true,
+                type: 1,
+                name: 'join',
+                description: 'Join your voice channel',
             },
-        ],
-    },
-    {
-        name: 'pause',
-        description: 'Pause playback',
-    },
-    {
-        name: 'resume',
-        description: 'Resume playback',
-    },
-    {
-        name: 'skip',
-        description: 'Skip current track',
-    },
-    {
-        name: 'next',
-        description: 'Skip to the next track',
-    },
-    {
-        name: 'queue',
-        description: 'Show the queue',
-    },
-    {
-        name: 'remove',
-        description: 'Remove a track from the queue by number',
-        options: [
             {
-                name: 'position',
-                description: 'Queue number to remove (see /queue)',
-                type: 4,
-                required: true,
-                min_value: 1,
+                type: 1,
+                name: 'leave',
+                description: 'Leave the voice channel',
+            },
+            {
+                type: 1,
+                name: 'play',
+                description: 'Play or queue from a URL, search query, or playlist',
+                options: [
+                    {
+                        name: 'source',
+                        description: 'URL or search query',
+                        type: 3,
+                        required: true,
+                    },
+                ],
+            },
+            {
+                type: 1,
+                name: 'pause',
+                description: 'Pause playback',
+            },
+            {
+                type: 1,
+                name: 'resume',
+                description: 'Resume playback',
+            },
+            {
+                type: 1,
+                name: 'skip',
+                description: 'Skip current track',
+            },
+            {
+                type: 1,
+                name: 'next',
+                description: 'Skip to the next track',
+            },
+            {
+                type: 1,
+                name: 'queue',
+                description: 'Show the queue',
+            },
+            {
+                type: 1,
+                name: 'purge',
+                description: 'Clear the full queue and stop playback',
+            },
+            {
+                type: 1,
+                name: 'remove',
+                description: 'Remove a track by number (or choose from buttons)',
+                options: [
+                    {
+                        name: 'position',
+                        description: 'Queue number to remove (optional)',
+                        type: 4,
+                        required: false,
+                        min_value: 1,
+                    },
+                ],
             },
         ],
     },

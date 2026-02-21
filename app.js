@@ -4,7 +4,12 @@ import * as dotenv from 'dotenv';
 import { Client, GatewayIntentBits, REST, Routes, userMention } from 'discord.js';
 import { commands } from './commands.js';
 import express from 'express';
-import { handleMusicCommand, handleVoiceStateUpdate, initializeMusic } from './music.js';
+import {
+    handleMusicCommand,
+    handleMusicComponentInteraction,
+    handleVoiceStateUpdate,
+    initializeMusic,
+} from './music.js';
 import { handleCatanCommand, handleCatanComponentInteraction } from './catan.js';
 
 // --- App bootstrap ---
@@ -61,12 +66,15 @@ client.on('interactionCreate', async interaction => {
 
     if (interaction.isButton() || interaction.isStringSelectMenu()) {
         try {
-            const consumed = await handleCatanComponentInteraction(interaction);
-            if (consumed) return;
+            const musicConsumed = await handleMusicComponentInteraction(interaction);
+            if (musicConsumed) return;
+
+            const catanConsumed = await handleCatanComponentInteraction(interaction);
+            if (catanConsumed) return;
         } catch (error) {
-            console.error('Catan component interaction failed:', error);
+            console.error('Component interaction failed:', error);
             if (!interaction.deferred && !interaction.replied) {
-                await interaction.reply({ content: 'Catan interaction failed. Please try again.', ephemeral: true });
+                await interaction.reply({ content: 'Interaction failed. Please try again.', ephemeral: true });
             }
             return;
         }
@@ -132,15 +140,7 @@ client.on('interactionCreate', async interaction => {
             await interaction.reply(`${left} ${symbol} ${right} = ${formattedResult}`);
             return;
         }
-        case 'join':
-        case 'leave':
-        case 'play':
-        case 'pause':
-        case 'resume':
-        case 'skip':
-        case 'next':
-        case 'queue':
-        case 'remove':
+        case 'music':
             try {
                 await handleMusicCommand(interaction);
             } catch (error) {

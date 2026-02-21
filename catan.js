@@ -10,6 +10,7 @@ const CATAN_FILE = path.join(DATA_DIR, 'catan.json');
 const STATE_VERSION = 2;
 const RESOURCES = ['wood', 'brick', 'wheat', 'sheep', 'ore'];
 const DEV_CARD_TYPES = ['knight', 'road_building', 'year_of_plenty', 'monopoly', 'victory_point'];
+const DISBAND_VOTE_WINDOW_MS = 5 * 60 * 1000;
 
 const PHASE = {
     LOBBY: 'lobby',
@@ -110,6 +111,7 @@ function createLobbyGame(players) {
         devDeck: [],
         awards: { longestRoadOwnerId: null, longestRoadLength: 0, largestArmyOwnerId: null },
         tradeState: { pendingOffer: null },
+        disbandVote: null,
         robberContext: null,
         createdAt: new Date().toISOString(),
         startedAt: null,
@@ -159,6 +161,9 @@ function loadState() {
             for (const guild of Object.values(parsed.guilds)) {
                 if (guild.game && !Array.isArray(guild.game.players)) {
                     guild.game.players = [];
+                }
+                if (guild.game && !Object.prototype.hasOwnProperty.call(guild.game, 'disbandVote')) {
+                    guild.game.disbandVote = null;
                 }
             }
         }
@@ -259,6 +264,53 @@ function drawRandomResource(resources) {
 
 function getPlayer(game, userId) {
     return game.players.find(p => p.id === userId) ?? null;
+}
+
+function isOngoingGame(game) {
+    return game.phase !== PHASE.LOBBY && game.phase !== PHASE.FINISHED;
+}
+
+function normalizeActiveDisbandVote(game) {
+    const vote = game.disbandVote;
+    if (!vote || typeof vote !== 'object') {
+        game.disbandVote = null;
+        return null;
+    }
+
+    if (!vote.initiatedBy || !Array.isArray(vote.approvals) || !Number.isFinite(vote.expiresAt)) {
+        game.disbandVote = null;
+        return null;
+    }
+
+    if (!game.players.some(player => player.id === vote.initiatedBy)) {
+        game.disbandVote = null;
+        return null;
+    }
+
+    vote.approvals = [...new Set(vote.approvals.filter(id => game.players.some(player => player.id === id)))];
+    if (!vote.approvals.includes(vote.initiatedBy)) {
+        vote.approvals.push(vote.initiatedBy);
+    }
+
+    if (Date.now() > vote.expiresAt) {
+        game.disbandVote = null;
+        return null;
+    }
+
+    return vote;
+}
+
+function pendingDisbandApprovals(game, vote) {
+    return game.players.filter(player => !vote.approvals.includes(player.id));
+}
+
+function formatDisbandVoteLine(game, vote) {
+    const pending = pendingDisbandApprovals(game, vote);
+    const expiresAtUnix = Math.floor(vote.expiresAt / 1000);
+    const pendingText = pending.length > 0
+        ? pending.map(player => `<@${player.id}>`).join(', ')
+        : 'none';
+    return `Disband vote: ${vote.approvals.length}/${game.players.length} approvals | Pending: ${pendingText} | Expires: <t:${expiresAtUnix}:R>`;
 }
 
 function currentPlayer(game) {
@@ -1061,7 +1113,7 @@ async function doPlace(interaction, state, guildId, userId, type, at) {
         return;
     }
 
-    let err = null;
+    let err;
     if (type === 'road') err = placeRoad(game, player, at, false);
     else if (type === 'settlement') err = placeSettlement(game, player, at, false, false);
     else if (type === 'city') err = placeCity(game, player, at, false);
@@ -1259,7 +1311,6 @@ async function handleDevPlay(interaction, state, guildId, userId) {
             return;
         }
         await interaction.reply(`Monopoly played on ${opts.resource}. Took ${taken}.`);
-        return;
     }
 }
 
@@ -1464,6 +1515,80 @@ async function handleSetupStatus(interaction, state, guildId) {
     await interaction.reply(`Setup placement: <@${game.setup.currentPlayerId}> must place ${game.setup.step}.`);
 }
 
+async function handleDisband(interaction, state, guildId, userId) {
+    const game = getGame(state, guildId);
+    if (!game) {
+        await interaction.reply('No game found.');
+        return;
+    }
+
+    if (!isOngoingGame(game)) {
+        if (game.phase === PHASE.LOBBY) {
+            await interaction.reply('Disband vote is only for ongoing games. During lobby phase, players can use /catan leave.');
+            return;
+        }
+        await interaction.reply('Game is already finished. Start a new one with /catan create.');
+        return;
+    }
+
+    const player = getPlayer(game, userId);
+    if (!player) {
+        await interaction.reply('You are not in this game.');
+        return;
+    }
+
+    const hadVote = Boolean(game.disbandVote);
+    const previousVote = game.disbandVote;
+    const vote = normalizeActiveDisbandVote(game);
+    const voteExpired = hadVote
+        && previousVote
+        && Number.isFinite(previousVote.expiresAt)
+        && Date.now() > previousVote.expiresAt;
+
+    if (!vote) {
+        const now = Date.now();
+        game.disbandVote = {
+            initiatedBy: userId,
+            approvals: [userId],
+            createdAt: now,
+            expiresAt: now + DISBAND_VOTE_WINDOW_MS,
+        };
+
+        const pending = pendingDisbandApprovals(game, game.disbandVote);
+        const prefix = voteExpired ? 'Previous disband vote expired.\n' : '';
+
+        if (pending.length === 0) {
+            removeGame(state, guildId);
+            saveState(state);
+            await interaction.reply(`${prefix}Disband approved by all players. Game removed.`);
+            return;
+        }
+
+        saveState(state);
+        await interaction.reply(
+            `${prefix}Disband vote started by <@${userId}>.\n${formatDisbandVoteLine(game, game.disbandVote)}\nAll players must run /catan disband to approve.`
+        );
+        return;
+    }
+
+    if (vote.approvals.includes(userId)) {
+        await interaction.reply(`You already approved this disband vote.\n${formatDisbandVoteLine(game, vote)}`);
+        return;
+    }
+
+    vote.approvals.push(userId);
+    const pending = pendingDisbandApprovals(game, vote);
+    if (pending.length === 0) {
+        removeGame(state, guildId);
+        saveState(state);
+        await interaction.reply('Disband approved by all players. Game removed by unanimous vote.');
+        return;
+    }
+
+    saveState(state);
+    await interaction.reply(`<@${userId}> approved disband.\n${formatDisbandVoteLine(game, vote)}`);
+}
+
 async function handleStatus(interaction, state, guildId) {
     const guildState = getGuildState(state, guildId);
     const game = guildState.game;
@@ -1479,6 +1604,13 @@ async function handleStatus(interaction, state, guildId) {
         ...game.players.map(player => formatPointsLine(game, player)),
     ];
     if (game.winnerId) lines.push(`Winner: ${getPlayer(game, game.winnerId)?.name ?? game.winnerId}`);
+    const hadVote = Boolean(game.disbandVote);
+    const vote = normalizeActiveDisbandVote(game);
+    if (hadVote && !vote) {
+        saveState(state);
+    } else if (vote) {
+        lines.push(formatDisbandVoteLine(game, vote));
+    }
 
     await interaction.reply(lines.join('\n'));
 }
@@ -1526,6 +1658,7 @@ export async function handleCatanCommand(interaction) {
         case 'create': await handleCreate(interaction, state, guildId, userId, displayName); return;
         case 'join': await handleJoin(interaction, state, guildId, userId, displayName); return;
         case 'leave': await handleLeave(interaction, state, guildId, userId, displayName); return;
+        case 'disband': await handleDisband(interaction, state, guildId, userId); return;
         case 'start': await handleStart(interaction, state, guildId); return;
         case 'roll': await handleRoll(interaction, state, guildId, userId); return;
         case 'place': await handlePlace(interaction, state, guildId, userId); return;

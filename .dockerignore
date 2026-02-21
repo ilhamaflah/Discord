@@ -13,6 +13,7 @@
 **/.toolstarget
 **/.vs
 **/.vscode
+**/.idea
 **/.next
 **/.cache
 **/*.*proj.user
@@ -24,10 +25,14 @@
 **/Dockerfile*
 **/node_modules
 **/npm-debug.log
+**/*.log
+**/*.tmp
 **/obj
 **/secrets.dev.yaml
 **/values.dev.yaml
 **/build
 **/dist
+.env
+.env.*
 LICENSE
 README.md

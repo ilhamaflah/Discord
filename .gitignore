@@ -1,6 +1,13 @@
 .env
+.env.*
+!.env.example
 .idea/
 node_modules/
 data/
 cookies.json
-cookiesv2.json
+cookies*.json
+*.log
+*.tmp
+*.local
+compose.override.yml
+compose.override.yaml

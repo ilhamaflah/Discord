@@ -1,10 +1,16 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { Connectors, Manager } from 'moonlink.js';
 
 const MAX_PLAYLIST_ITEMS = 50;
 const MAX_QUEUE_DISPLAY_ITEMS = 20;
+const MAX_REMOVE_BUTTON_ITEMS = 10;
+const PLAY_CHOICE_ITEMS = 5;
+const PLAY_SELECTION_TTL_MS = 2 * 60 * 1000;
 
 let manager = null;
+const pendingPlaySelections = new Map();
 
 function isMusicDebug() {
     const value = process.env.MUSIC_DEBUG;
@@ -59,6 +65,14 @@ function formatTrack(track) {
     return track.title || track.uri || 'Unknown track';
 }
 
+function formatDuration(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return 'live';
+    const totalSeconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
 function formatQueuedMessage(track) {
     const title = formatTrack(track);
     if (track?.uri) {
@@ -69,6 +83,120 @@ function formatQueuedMessage(track) {
 
 function isLikelyUrl(input) {
     return /^https?:\/\//i.test(input.trim());
+}
+
+function prunePendingPlaySelections() {
+    const now = Date.now();
+    for (const [id, selection] of pendingPlaySelections.entries()) {
+        if (selection.expiresAt <= now) {
+            pendingPlaySelections.delete(id);
+        }
+    }
+}
+
+function createPendingPlaySelection({ guildId, userId, tracks, query }) {
+    prunePendingPlaySelections();
+    const id = randomUUID().slice(0, 12);
+    pendingPlaySelections.set(id, {
+        guildId,
+        userId,
+        tracks,
+        query,
+        expiresAt: Date.now() + PLAY_SELECTION_TTL_MS,
+    });
+    return id;
+}
+
+function getPendingPlaySelection(id) {
+    prunePendingPlaySelections();
+    return pendingPlaySelections.get(id) || null;
+}
+
+function buildPlayChoiceMessage(query, tracks) {
+    const lines = [`Choose one result for: **${query}**`, ''];
+    lines.push(...tracks.map((track, index) => `${index + 1}. ${formatTrack(track)} (${formatDuration(track.duration)})`));
+    lines.push('');
+    lines.push('Click a number button below to queue that track.');
+    return lines.join('\n');
+}
+
+function buildPlayChoiceComponents(selectionId, tracksCount) {
+    const pickButtons = [];
+    for (let i = 0; i < tracksCount; i += 1) {
+        pickButtons.push(
+            new ButtonBuilder()
+                .setCustomId(`music_play_pick:${selectionId}:${i + 1}`)
+                .setLabel(String(i + 1))
+                .setStyle(ButtonStyle.Primary),
+        );
+    }
+
+    const rows = [];
+    if (pickButtons.length > 0) {
+        rows.push(new ActionRowBuilder().addComponents(pickButtons));
+    }
+
+    rows.push(
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`music_play_cancel:${selectionId}`)
+                .setLabel('Cancel')
+                .setStyle(ButtonStyle.Danger),
+        ),
+    );
+
+    return rows;
+}
+
+function buildRemoveSelectionMessage(player, limit = MAX_REMOVE_BUTTON_ITEMS) {
+    if (!player || player.queue.size === 0) {
+        return 'Queue is empty.';
+    }
+
+    const visible = player.queue.tracks.slice(0, limit);
+    const lines = ['Select a queue number to remove:', ''];
+    lines.push(...visible.map((track, index) => `${index + 1}. ${formatTrack(track)}`));
+
+    if (player.queue.size > visible.length) {
+        lines.push('');
+        lines.push(`Showing first ${visible.length} of ${player.queue.size} queued tracks.`);
+    }
+
+    return lines.join('\n');
+}
+
+function buildRemoveSelectionComponents(guildId, userId, count) {
+    const rows = [];
+    let currentRow = [];
+
+    for (let i = 0; i < count; i += 1) {
+        currentRow.push(
+            new ButtonBuilder()
+                .setCustomId(`music_remove_pick:${guildId}:${userId}:${i + 1}`)
+                .setLabel(String(i + 1))
+                .setStyle(ButtonStyle.Secondary),
+        );
+
+        if (currentRow.length === 5) {
+            rows.push(new ActionRowBuilder().addComponents(currentRow));
+            currentRow = [];
+        }
+    }
+
+    if (currentRow.length > 0) {
+        rows.push(new ActionRowBuilder().addComponents(currentRow));
+    }
+
+    rows.push(
+        new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`music_remove_cancel:${guildId}:${userId}`)
+                .setLabel('Cancel')
+                .setStyle(ButtonStyle.Danger),
+        ),
+    );
+
+    return rows;
 }
 
 async function respond(interaction, content) {
@@ -288,13 +416,166 @@ export function handleVoiceStateUpdate(oldState, newState) {
     });
 }
 
+async function handlePlayComponent(interaction) {
+    const pickMatch = interaction.customId.match(/^music_play_pick:([^:]+):(\d+)$/);
+    const cancelMatch = interaction.customId.match(/^music_play_cancel:([^:]+)$/);
+
+    if (!pickMatch && !cancelMatch) {
+        return false;
+    }
+
+    const selectionId = pickMatch ? pickMatch[1] : cancelMatch[1];
+    const selection = getPendingPlaySelection(selectionId);
+
+    if (!selection) {
+        await interaction.update({
+            content: 'This search selection has expired. Run `/music play` again.',
+            components: [],
+        });
+        return true;
+    }
+
+    if (interaction.user.id !== selection.userId) {
+        await interaction.reply({
+            content: 'Only the user who ran `/music play` can choose from this search menu.',
+            ephemeral: true,
+        });
+        return true;
+    }
+
+    if (interaction.guildId !== selection.guildId) {
+        await interaction.reply({
+            content: 'This selection belongs to a different server.',
+            ephemeral: true,
+        });
+        return true;
+    }
+
+    if (cancelMatch) {
+        pendingPlaySelections.delete(selectionId);
+        await interaction.update({ content: 'Selection canceled.', components: [] });
+        return true;
+    }
+
+    const index = Number.parseInt(pickMatch[2], 10) - 1;
+    const selectedTrack = selection.tracks[index];
+    if (!selectedTrack) {
+        await interaction.update({ content: 'Invalid selection. Run `/music play` again.', components: [] });
+        pendingPlaySelections.delete(selectionId);
+        return true;
+    }
+
+    try {
+        const player = await ensurePlayer(interaction);
+        if (!player) {
+            await interaction.update({
+                content: 'Join a voice channel first, then run `/music play` again.',
+                components: [],
+            });
+            pendingPlaySelections.delete(selectionId);
+            return true;
+        }
+
+        player.queue.add(selectedTrack);
+        await startPlaybackIfIdle(player);
+
+        pendingPlaySelections.delete(selectionId);
+        await interaction.update({ content: formatQueuedMessage(selectedTrack), components: [] });
+    } catch (error) {
+        pendingPlaySelections.delete(selectionId);
+        const message = error instanceof Error ? error.message : 'Failed to queue selected track.';
+        await interaction.update({ content: message, components: [] });
+    }
+
+    return true;
+}
+
+async function handleRemoveComponent(interaction) {
+    const pickMatch = interaction.customId.match(/^music_remove_pick:([^:]+):([^:]+):(\d+)$/);
+    const cancelMatch = interaction.customId.match(/^music_remove_cancel:([^:]+):([^:]+)$/);
+
+    if (!pickMatch && !cancelMatch) {
+        return false;
+    }
+
+    const guildId = pickMatch ? pickMatch[1] : cancelMatch[1];
+    const userId = pickMatch ? pickMatch[2] : cancelMatch[2];
+
+    if (interaction.guildId !== guildId || interaction.user.id !== userId) {
+        await interaction.reply({
+            content: 'Only the user who opened this remove menu can use it.',
+            ephemeral: true,
+        });
+        return true;
+    }
+
+    if (cancelMatch) {
+        await interaction.update({ content: 'Remove selection canceled.', components: [] });
+        return true;
+    }
+
+    const player = manager.players.get(guildId);
+    if (!player || player.queue.size === 0) {
+        await interaction.update({ content: 'Queue is empty.', components: [] });
+        return true;
+    }
+
+    const position = Number.parseInt(pickMatch[3], 10);
+    if (!Number.isFinite(position) || position < 1 || position > player.queue.size) {
+        const count = Math.min(player.queue.size, MAX_REMOVE_BUTTON_ITEMS);
+        await interaction.update({
+            content: `Invalid position. Choose 1-${player.queue.size}.\n\n${buildRemoveSelectionMessage(player, count)}`,
+            components: buildRemoveSelectionComponents(guildId, userId, count),
+        });
+        return true;
+    }
+
+    const removedTrack = player.queue.remove(position - 1);
+    if (!removedTrack) {
+        await interaction.update({ content: 'Failed to remove that track.', components: [] });
+        return true;
+    }
+
+    if (player.queue.size === 0) {
+        await interaction.update({
+            content: `Removed: ${formatTrack(removedTrack)}\nQueue is now empty.`,
+            components: [],
+        });
+        return true;
+    }
+
+    const count = Math.min(player.queue.size, MAX_REMOVE_BUTTON_ITEMS);
+    await interaction.update({
+        content: `Removed: ${formatTrack(removedTrack)}\n\n${buildRemoveSelectionMessage(player, count)}`,
+        components: buildRemoveSelectionComponents(guildId, userId, count),
+    });
+
+    return true;
+}
+
+export async function handleMusicComponentInteraction(interaction) {
+    if (!manager) return false;
+    if (!interaction.isButton()) return false;
+    if (!interaction.customId.startsWith('music_')) return false;
+
+    const playHandled = await handlePlayComponent(interaction);
+    if (playHandled) return true;
+
+    const removeHandled = await handleRemoveComponent(interaction);
+    return removeHandled;
+}
+
 export async function handleMusicCommand(interaction) {
     if (!manager) {
         await respond(interaction, 'Music manager is not initialized.');
         return;
     }
 
-    switch (interaction.commandName) {
+    const action = interaction.commandName === 'music'
+        ? interaction.options.getSubcommand(true)
+        : interaction.commandName;
+
+    switch (action) {
         case 'join': {
             const player = await ensurePlayer(interaction);
             if (!player) {
@@ -347,6 +628,22 @@ export async function handleMusicCommand(interaction) {
 
                     const playlistName = result.playlistInfo?.name || 'Playlist';
                     await respond(interaction, `Queued ${tracks.length} tracks from playlist: ${playlistName}`);
+                    return;
+                }
+
+                if (!isLikelyUrl(source)) {
+                    const choices = result.tracks.slice(0, PLAY_CHOICE_ITEMS);
+                    const selectionId = createPendingPlaySelection({
+                        guildId: interaction.guildId,
+                        userId: interaction.user.id,
+                        tracks: choices,
+                        query: source,
+                    });
+
+                    await respond(interaction, {
+                        content: buildPlayChoiceMessage(source, choices),
+                        components: buildPlayChoiceComponents(selectionId, choices.length),
+                    });
                     return;
                 }
 
@@ -433,8 +730,33 @@ export async function handleMusicCommand(interaction) {
             return;
         }
 
+        case 'purge': {
+            const player = manager.players.get(interaction.guildId);
+            if (!player) {
+                await respond(interaction, 'Queue is already empty.');
+                return;
+            }
+
+            const queuedCount = player.queue.size;
+            const hadCurrent = Boolean(player.current);
+
+            if (queuedCount === 0 && !hadCurrent) {
+                await respond(interaction, 'Queue is already empty.');
+                return;
+            }
+
+            player.queue.clear();
+            if (hadCurrent) {
+                await player.stop();
+            }
+
+            const purgedCount = queuedCount + (hadCurrent ? 1 : 0);
+            await respond(interaction, `Purged ${purgedCount} track(s) from the queue.`);
+            return;
+        }
+
         case 'remove': {
-            const position = interaction.options.getInteger('position', true);
+            const position = interaction.options.getInteger('position', false);
             const player = manager.players.get(interaction.guildId);
 
             if (!player || player.queue.size === 0) {
@@ -442,18 +764,27 @@ export async function handleMusicCommand(interaction) {
                 return;
             }
 
-            if (position < 1 || position > player.queue.size) {
-                await respond(interaction, `Invalid position. Choose 1-${player.queue.size}.`);
+            if (position !== null) {
+                if (position < 1 || position > player.queue.size) {
+                    await respond(interaction, `Invalid position. Choose 1-${player.queue.size}.`);
+                    return;
+                }
+
+                const removedTrack = player.queue.remove(position - 1);
+                if (!removedTrack) {
+                    await respond(interaction, 'Failed to remove that track.');
+                    return;
+                }
+
+                await respond(interaction, `Removed: ${formatTrack(removedTrack)}`);
                 return;
             }
 
-            const removedTrack = player.queue.remove(position - 1);
-            if (!removedTrack) {
-                await respond(interaction, 'Failed to remove that track.');
-                return;
-            }
-
-            await respond(interaction, `Removed: ${formatTrack(removedTrack)}`);
+            const count = Math.min(player.queue.size, MAX_REMOVE_BUTTON_ITEMS);
+            await respond(interaction, {
+                content: buildRemoveSelectionMessage(player, count),
+                components: buildRemoveSelectionComponents(interaction.guildId, interaction.user.id, count),
+            });
             return;
         }
 

@@ -4,14 +4,15 @@ import * as dotenv from 'dotenv';
 import { Client, GatewayIntentBits, REST, Routes, userMention } from 'discord.js';
 import { commands } from './commands.js';
 import express from 'express';
-import { handleMusicCommand, handleVoiceStateUpdate } from './music.js';
-import { handleCatanCommand } from './catan.js';
+import { handleMusicCommand, handleVoiceStateUpdate, initializeMusic } from './music.js';
+import { handleCatanCommand, handleCatanComponentInteraction } from './catan.js';
 
 // --- App bootstrap ---
 const app = express();
 dotenv.config();
 //const config = require("./config/config");
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
+initializeMusic(client);
 
 // --- Web server (keep-alive / health) ---
 app.set('port', 3000);
@@ -56,11 +57,26 @@ client.on('clientReady', () => {
 
 client.on('interactionCreate', async interaction => {
     //console.log(`${msg.author.username}: ${msg.content.toString()}`);
+    if (!interaction.guild) return;
+
+    if (interaction.isButton() || interaction.isStringSelectMenu()) {
+        try {
+            const consumed = await handleCatanComponentInteraction(interaction);
+            if (consumed) return;
+        } catch (error) {
+            console.error('Catan component interaction failed:', error);
+            if (!interaction.deferred && !interaction.replied) {
+                await interaction.reply({ content: 'Catan interaction failed. Please try again.', ephemeral: true });
+            }
+            return;
+        }
+    }
+
+    if (!interaction.isChatInputCommand()) return;
+
     const stringifiedObject = JSON.stringify(interaction.options, null, 2);
     console.log(`Message received: ${interaction.commandName}`);
     console.log(stringifiedObject);
-    if (!interaction.guild) return;
-    if (!interaction.isChatInputCommand()) return;
 
     switch (interaction.commandName) {
         case 'inspire':

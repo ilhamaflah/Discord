@@ -1,36 +1,38 @@
-# 🎯 TOD Bot 🤖🎵🎲
+﻿# TOD Bot
 
 ![TOD Bot Feature](./cyka.jpg)
 
-✨ Discord multipurpose bot with:
-- 🛠️ Utility commands
-- 🎵 NodeLink-powered music playback (via `moonlink.js`)
-- 🎲 Playable Catan mini-game
+![Node](https://img.shields.io/badge/Node-22+-3C873A?style=for-the-badge&logo=node.js&logoColor=white)
+![Discord](https://img.shields.io/badge/Discord.js-v14-5865F2?style=for-the-badge&logo=discord&logoColor=white)
+![Music](https://img.shields.io/badge/Audio-NodeLink-FF6B6B?style=for-the-badge)
+![Mode](https://img.shields.io/badge/Mode-Multiplayer-0EA5E9?style=for-the-badge)
+
+> 🎯 Your all-in-one Discord arena bot for utility, music, and Catan nights.
 
 ## 🌈 Features
 
-- 💬 Slash-command based bot (`/ping`, `/calculate`, `/tod`, `/inspire`)
-- 🎧 Music system with NodeLink
-- 🔎 `/music play` with search result buttons
-- 📇 Compact now-playing chat card
+- 💬 Slash-command workflow (`/ping`, `/calculate`, `/tod`, `/inspire`)
+- 🎵 Music system with NodeLink + Moonlink
+- 🔎 `/music play` supports URL or search query
+- 🎛️ Search pick buttons for top results
+- 📇 Compact now-playing chat cards
 - 📄 Queue pagination with Previous/Next buttons
-- 🧹 Queue management: `bump`, `remove`, `purge`
-- 🔁 Auto now-playing card when next queued track starts after a finished track
-- 🏗️ Catan game system
-- 👥 Lobby flow (`create`, `join`, `leave`, `start`)
-- 🎲 Turn flow (`roll`, `place`, `build`, `endturn`)
-- 🤝 Trade + dev cards + robber
-- 🗳️ Ongoing-game disband voting that requires all active players
+- 🧹 Queue tools: `bump`, `remove`, `purge`
+- 🔁 Auto now-playing card when finished track advances to next queue item
+- 🎲 Catan mini-game with lobby, setup, turn flow, trade, robber, and dev cards
+- 🗳️ Ongoing-game disband requires all active players to approve
 
 ## 🧭 Command Overview
 
-🛠️ Utility:
+### 🛠️ Utility
+
 - `/ping`
 - `/calculate left:<number> operator:<add|subtract|multiply|divide> right:<number>`
 - `/tod member:<user>`
 - `/inspire`
 
-🎵 Music:
+### 🎵 Music
+
 - `/music join`
 - `/music leave`
 - `/music play source:<url-or-query>`
@@ -44,7 +46,8 @@
 - `/music bump position:<queue-index>` (autocomplete)
 - `/music remove position:<queue-index>` (autocomplete)
 
-🎲 Catan:
+### 🎲 Catan
+
 - `/catan create`
 - `/catan join`
 - `/catan leave`
@@ -68,10 +71,10 @@
 
 - 🟢 Node.js `>= 22`
 - 📦 npm
-- 🤖 A Discord application + bot token
-- 🔌 A running NodeLink server (same machine, another machine, or Docker service)
+- 🤖 Discord application + bot token
+- 🔌 Running NodeLink server (local, remote, or Docker)
 
-## 🔐 Environment Variables
+## 🔐 .env Template
 
 Create `.env` in project root:
 
@@ -99,19 +102,19 @@ MUSIC_IDLE_LEAVE_MS=60000
 MUSIC_DEBUG=1
 ```
 
-## 🖥️ Run Locally (npm)
+## 🖥️ Run Locally
 
 1. Install dependencies:
 ```bash
 npm ci
 ```
-2. Ensure NodeLink is running and matches your `.env`.
-3. Start bot:
+2. Ensure NodeLink is running and matches `.env`.
+3. Start the bot:
 ```bash
 npm start
 ```
 
-✅ The bot registers global slash commands at startup.
+✅ Slash commands are registered at startup.
 
 ## 🐳 Run with Docker
 
@@ -120,23 +123,23 @@ Bot only (connects to external NodeLink):
 docker compose -f compose.yaml up -d --build
 ```
 
-Full stack (bot + NodeLink together):
+Full stack (bot + NodeLink):
 ```bash
 docker compose -f compose.stack.yaml up -d --build
 ```
 
 ## 🗂️ Project Files
 
-- `app.js`: bootstrap, Discord events, command routing
+- `app.js`: app bootstrap, Discord events, routing
 - `commands.js`: slash command definitions
-- `music.js`: music manager, queue UI, components, autoplay card updates
-- `catan.js`: Catan game logic and interactions
-- `compose.yaml`: bot service
-- `compose.stack.yaml`: bot + NodeLink services
+- `music.js`: music manager, queue UI, component interactions
+- `catan.js`: Catan gameplay logic and interactions
+- `compose.yaml`: bot container setup
+- `compose.stack.yaml`: bot + NodeLink stack
 - `Dockerfile`: production image for bot
 
-## 🛡️ Security Notes
+## 🛡️ Security
 
 - 🚫 Do not commit real tokens/passwords
-- 🔄 Rotate secrets if they were ever exposed
-- 🔒 Keep `.env` local and excluded from version control
+- 🔄 Rotate secrets if exposed
+- 🔒 Keep `.env` local and ignored by git

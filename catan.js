@@ -1988,6 +1988,15 @@ function createTurnRollButtons(guildId) {
     );
 }
 
+function createTurnActionButtons(guildId) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`catan_action_trade_bank:${guildId}`).setLabel('Trade (Bank)').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`catan_action_trade_player:${guildId}`).setLabel('Trade (Player)').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId(`catan_action_dev_buy:${guildId}`).setLabel('Buy Dev Card').setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId(`catan_action_dev_guide:${guildId}`).setLabel('Dev Guide').setStyle(ButtonStyle.Primary)
+    );
+}
+
 async function handleStart(interaction, state, guildId) {
     const game = getGame(state, guildId);
     if (!game || game.phase !== PHASE.LOBBY) {
@@ -2044,6 +2053,13 @@ async function handleRoll(interaction, state, guildId, userId) {
         return;
     }
     saveState(state);
+    if (game.phase === PHASE.TURN_ACTION) {
+        await interaction.reply({
+            content: `${result.message}\nTurn actions ready: trade/buy dev via buttons below (build remains /catan place).`,
+            components: [createTurnActionButtons(guildId)],
+        });
+        return;
+    }
     await interaction.reply(result.message);
 }
 
@@ -2193,27 +2209,23 @@ async function handleBuildCompat(interaction, state, guildId, userId) {
     await doPlace(interaction, state, guildId, userId, type, at);
 }
 
-async function handleDevBuy(interaction, state, guildId, userId) {
+function executeDevBuy(state, guildId, userId) {
     const game = getGame(state, guildId);
     if (!game || game.phase !== PHASE.TURN_ACTION) {
-        await interaction.reply('Dev card purchase is only available during turn action phase.');
-        return;
+        return { error: 'Dev card purchase is only available during turn action phase.' };
     }
 
     const turnError = validateTurnPlayer(game, userId);
     if (turnError) {
-        await interaction.reply(turnError);
-        return;
+        return { error: turnError };
     }
 
     const player = currentPlayer(game);
     if (!canAfford(player.resources, COSTS.dev_buy)) {
-        await interaction.reply(`Not enough resources. Need ${costToString(COSTS.dev_buy)}.`);
-        return;
+        return { error: `Not enough resources. Need ${costToString(COSTS.dev_buy)}.` };
     }
     if (game.devDeck.length === 0) {
-        await interaction.reply('Development card deck is empty.');
-        return;
+        return { error: 'Development card deck is empty.' };
     }
 
     spendResources(player.resources, COSTS.dev_buy);
@@ -2221,14 +2233,24 @@ async function handleDevBuy(interaction, state, guildId, userId) {
     player.lockedDevCards[card] += 1;
 
     const winner = maybeFinishGame(game);
+    const winnerPoints = winner ? getPlayerPoints(game, winner) : null;
     saveState(state);
+    return { card, winner, winnerPoints };
+}
+
+async function handleDevBuy(interaction, state, guildId, userId) {
+    const result = executeDevBuy(state, guildId, userId);
+    if (result.error) {
+        await interaction.reply(result.error);
+        return;
+    }
 
     await interaction.reply({
-        content: `You bought a development card: ${card}. It cannot be played this turn.\nUse /catan dev-cards to see effects and timing.`,
+        content: `You bought a development card: ${result.card}. It cannot be played this turn.\nUse /catan dev-cards to see effects and timing.`,
         ephemeral: true,
     });
-    if (winner) {
-        await interaction.followUp(`${winner.name} wins with ${getPlayerPoints(game, winner)} VP.`);
+    if (result.winner) {
+        await interaction.followUp(`${result.winner.name} wins with ${result.winnerPoints} VP.`);
     }
 }
 
@@ -2867,6 +2889,13 @@ async function handleTurnRollButton(interaction) {
     }
 
     saveState(state);
+    if (game.phase === PHASE.TURN_ACTION) {
+        await interaction.reply({
+            content: `${result.message}\nTurn actions ready: trade/buy dev via buttons below (build remains /catan place).`,
+            components: [createTurnActionButtons(guildId)],
+        });
+        return true;
+    }
     await interaction.reply(result.message);
     return true;
 }
@@ -2891,11 +2920,94 @@ async function handleLobbyJoinButton(interaction) {
     return true;
 }
 
+async function handleTurnActionButton(interaction) {
+    const match = interaction.customId.match(/^catan_action_(trade_bank|trade_player|dev_buy|dev_guide):([^:]+)$/);
+    if (!match) {
+        await interaction.reply({ content: 'Invalid turn action payload.', ephemeral: true });
+        return true;
+    }
+
+    const [, action, guildId] = match;
+    const state = loadState();
+    const game = getGame(state, guildId);
+    if (!game) {
+        await interaction.reply({ content: 'No game found.', ephemeral: true });
+        return true;
+    }
+
+    if (action === 'dev_guide') {
+        await interaction.reply({ content: getDevCardGuideLines().join('\n'), ephemeral: true });
+        return true;
+    }
+
+    if (game.phase !== PHASE.TURN_ACTION) {
+        await interaction.reply({ content: 'Turn action phase is not active.', ephemeral: true });
+        return true;
+    }
+
+    const turnError = validateTurnPlayer(game, interaction.user.id);
+    if (turnError) {
+        await interaction.reply({ content: turnError, ephemeral: true });
+        return true;
+    }
+
+    if (action === 'trade_bank') {
+        const player = currentPlayer(game);
+        await interaction.reply({
+            content: [
+                'Bank trade quick help:',
+                `Your resources: ${resourceMapToString(player.resources)}`,
+                `Use: /catan trade-bank give:<resource> get:<resource>`,
+                'Rule: 4 of one resource for 1 of another.',
+            ].join('\n'),
+            ephemeral: true,
+        });
+        return true;
+    }
+
+    if (action === 'trade_player') {
+        const player = currentPlayer(game);
+        await interaction.reply({
+            content: [
+                'Player trade quick help:',
+                `Your resources: ${resourceMapToString(player.resources)}`,
+                'Use: /catan trade-player target:@user give:wood:1,brick:1 get:ore:1',
+                'Tip: offer/request uses resource:count comma list.',
+            ].join('\n'),
+            ephemeral: true,
+        });
+        return true;
+    }
+
+    if (action === 'dev_buy') {
+        const result = executeDevBuy(state, guildId, interaction.user.id);
+        if (result.error) {
+            await interaction.reply({ content: result.error, ephemeral: true });
+            return true;
+        }
+
+        await interaction.reply({
+            content: `You bought a development card: ${result.card}. It cannot be played this turn.\nUse /catan dev-cards to see effects and timing.`,
+            ephemeral: true,
+        });
+        if (result.winner) {
+            await interaction.followUp(`${result.winner.name} wins with ${result.winnerPoints} VP.`);
+        }
+        return true;
+    }
+
+    await interaction.reply({ content: 'Unsupported action button.', ephemeral: true });
+    return true;
+}
+
 // Handles catan button interactions (lobby, setup roll, turn roll, and trade flow).
 export async function handleCatanComponentInteraction(interaction) {
     if (!interaction.isButton()) return false;
     if (interaction.customId.startsWith('catan_lobby_join:')) {
         return handleLobbyJoinButton(interaction);
+    }
+    if (interaction.customId.startsWith('catan_action_')) {
+        return handleTurnActionButton(interaction);
     }
     if (interaction.customId.startsWith('catan_setup_roll:')) {
         return handleSetupRollButton(interaction);

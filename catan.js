@@ -1,6 +1,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 
 // --- Persistence and global constants ---
@@ -64,12 +65,12 @@ const DEV_CARD_COUNTS = {
 };
 
 const RESOURCE_ICON = {
-    wood: '🌲',
-    brick: '🧱',
-    wheat: '🌾',
-    sheep: '🐑',
-    ore: '⛰️',
-    desert: '🏜️',
+    wood: '\u{1F333}',
+    brick: '\u{1F9F1}',
+    wheat: '\u{1F33E}',
+    sheep: '\u{1F411}',
+    ore: '\u{26CF}\u{FE0F}',
+    desert: '\u{1F3DC}\u{FE0F}',
 };
 
 const BUILDING_ICON = {
@@ -244,13 +245,23 @@ function addResources(resources, delta) {
 }
 
 function resourceMapToString(map) {
-    return RESOURCES.map(k => `${k} ${map[k] ?? 0}`).join(', ');
+    return RESOURCES.map(k => `${resourceDisplayName(k)} ${map[k] ?? 0}`).join(', ');
+}
+
+function resourceDisplayName(resource) {
+    const icon = RESOURCE_ICON[resource];
+    return icon ? `${icon} ${resource}` : resource;
+}
+
+function resourceLegendLine(includeDesert = true) {
+    const list = includeDesert ? [...RESOURCES, 'desert'] : RESOURCES;
+    return list.map(resourceDisplayName).join(' | ');
 }
 
 function costToString(costMap) {
     return RESOURCES
         .filter(resource => (costMap[resource] ?? 0) > 0)
-        .map(resource => `${resource} ${costMap[resource]}`)
+        .map(resource => `${resourceDisplayName(resource)} ${costMap[resource]}`)
         .join(', ');
 }
 
@@ -274,6 +285,7 @@ function getDevCardGuideLines() {
         '- Bought cards go to "Locked dev cards" and cannot be played this turn.',
         '- Locked cards become playable after turn ends.',
         '- /catan dev-play is only usable during your TURN_ACTION.',
+        `- Resource legend: ${resourceLegendLine(false)}.`,
         '',
         'Cards:',
         '- knight: /catan dev-play card:knight -> starts robber move. Then use /catan robber tile:<1-19> [target]. Counts toward Largest Army.',
@@ -668,7 +680,7 @@ function setupAdvance(game) {
         game.phase = PHASE.TURN_ROLL;
         game.turn = { currentPlayerId: game.setup.order[0], round: 1, rolled: false, dice: null };
         game.setup = null;
-        return 'Setup complete. Normal turn flow begins. First player should /catan roll.';
+        return 'Setup complete. Normal turn flow begins. First player should roll.';
     }
 
     game.setup.currentPlayerId = game.setup.snakeOrder[game.setup.actionIndex];
@@ -1175,6 +1187,555 @@ function renderBoardSvg(game, focusTarget = null) {
     return lines.join('');
 }
 
+const PIXEL_FONT_5X7 = {
+    '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+    '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+    '2': ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+    '3': ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+    '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+    '5': ['11111', '10000', '10000', '11110', '00001', '00001', '11110'],
+    '6': ['01110', '10000', '10000', '11110', '10001', '10001', '01110'],
+    '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+    '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+    '9': ['01110', '10001', '10001', '01111', '00001', '00001', '01110'],
+    A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+    B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+    C: ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
+    D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+    E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+    F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+    G: ['01110', '10001', '10000', '10111', '10001', '10001', '01110'],
+    H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+    I: ['11111', '00100', '00100', '00100', '00100', '00100', '11111'],
+    J: ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
+    K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+    L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
+    M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+    N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+    O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+    P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+    Q: ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
+    R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+    S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+    T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+    U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+    V: ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
+    W: ['10001', '10001', '10001', '10101', '10101', '10101', '01010'],
+    X: ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
+    Y: ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
+    Z: ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
+    '-': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
+    '#': ['01010', '11111', '01010', '01010', '11111', '01010', '00000'],
+    ':': ['00000', '00100', '00100', '00000', '00100', '00100', '00000'],
+    '.': ['00000', '00000', '00000', '00000', '00000', '00100', '00100'],
+    '_': ['00000', '00000', '00000', '00000', '00000', '00000', '11111'],
+    ' ': ['00000', '00000', '00000', '00000', '00000', '00000', '00000'],
+};
+
+function hexToRgba(hex, alpha = 255) {
+    const clean = String(hex).replace('#', '');
+    if (clean.length === 3) {
+        const r = Number.parseInt(clean[0] + clean[0], 16);
+        const g = Number.parseInt(clean[1] + clean[1], 16);
+        const b = Number.parseInt(clean[2] + clean[2], 16);
+        return [r, g, b, alpha];
+    }
+    const r = Number.parseInt(clean.slice(0, 2), 16);
+    const g = Number.parseInt(clean.slice(2, 4), 16);
+    const b = Number.parseInt(clean.slice(4, 6), 16);
+    return [r, g, b, alpha];
+}
+
+function createRasterCanvas(width, height, backgroundHex) {
+    const pixels = new Uint8Array(width * height * 4);
+    const [r, g, b, a] = hexToRgba(backgroundHex);
+    for (let i = 0; i < width * height; i += 1) {
+        const offset = i * 4;
+        pixels[offset] = r;
+        pixels[offset + 1] = g;
+        pixels[offset + 2] = b;
+        pixels[offset + 3] = a;
+    }
+    return { width, height, pixels };
+}
+
+function setPixel(canvas, x, y, color) {
+    const ix = Math.round(x);
+    const iy = Math.round(y);
+    if (ix < 0 || iy < 0 || ix >= canvas.width || iy >= canvas.height) return;
+
+    const offset = ((iy * canvas.width) + ix) * 4;
+    const alpha = (color[3] ?? 255) / 255;
+    const inv = 1 - alpha;
+    canvas.pixels[offset] = Math.round((color[0] * alpha) + (canvas.pixels[offset] * inv));
+    canvas.pixels[offset + 1] = Math.round((color[1] * alpha) + (canvas.pixels[offset + 1] * inv));
+    canvas.pixels[offset + 2] = Math.round((color[2] * alpha) + (canvas.pixels[offset + 2] * inv));
+    canvas.pixels[offset + 3] = 255;
+}
+
+function drawFilledRect(canvas, x, y, width, height, color) {
+    const startX = Math.max(0, Math.floor(x));
+    const endX = Math.min(canvas.width - 1, Math.ceil(x + width));
+    const startY = Math.max(0, Math.floor(y));
+    const endY = Math.min(canvas.height - 1, Math.ceil(y + height));
+    for (let py = startY; py <= endY; py += 1) {
+        for (let px = startX; px <= endX; px += 1) {
+            setPixel(canvas, px, py, color);
+        }
+    }
+}
+
+function drawRectStroke(canvas, x, y, width, height, strokeWidth, color) {
+    drawFilledRect(canvas, x, y, width, strokeWidth, color);
+    drawFilledRect(canvas, x, y + height - strokeWidth, width, strokeWidth, color);
+    drawFilledRect(canvas, x, y, strokeWidth, height, color);
+    drawFilledRect(canvas, x + width - strokeWidth, y, strokeWidth, height, color);
+}
+
+function distanceToSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    if (dx === 0 && dy === 0) return Math.hypot(px - x1, py - y1);
+    const t = Math.max(0, Math.min(1, (((px - x1) * dx) + ((py - y1) * dy)) / ((dx * dx) + (dy * dy))));
+    const cx = x1 + (t * dx);
+    const cy = y1 + (t * dy);
+    return Math.hypot(px - cx, py - cy);
+}
+
+function drawLineWidth(canvas, x1, y1, x2, y2, width, color) {
+    const half = width / 2;
+    const minX = Math.floor(Math.min(x1, x2) - half - 1);
+    const maxX = Math.ceil(Math.max(x1, x2) + half + 1);
+    const minY = Math.floor(Math.min(y1, y2) - half - 1);
+    const maxY = Math.ceil(Math.max(y1, y2) + half + 1);
+    for (let py = minY; py <= maxY; py += 1) {
+        for (let px = minX; px <= maxX; px += 1) {
+            if (distanceToSegment(px + 0.5, py + 0.5, x1, y1, x2, y2) <= half) {
+                setPixel(canvas, px, py, color);
+            }
+        }
+    }
+}
+
+function drawFilledCircle(canvas, cx, cy, radius, color) {
+    const minX = Math.floor(cx - radius);
+    const maxX = Math.ceil(cx + radius);
+    const minY = Math.floor(cy - radius);
+    const maxY = Math.ceil(cy + radius);
+    const r2 = radius * radius;
+    for (let py = minY; py <= maxY; py += 1) {
+        for (let px = minX; px <= maxX; px += 1) {
+            const dx = px - cx;
+            const dy = py - cy;
+            if ((dx * dx) + (dy * dy) <= r2) {
+                setPixel(canvas, px, py, color);
+            }
+        }
+    }
+}
+
+function drawCircleStroke(canvas, cx, cy, radius, strokeWidth, color) {
+    const outer = radius;
+    const inner = Math.max(0, radius - strokeWidth);
+    const minX = Math.floor(cx - outer);
+    const maxX = Math.ceil(cx + outer);
+    const minY = Math.floor(cy - outer);
+    const maxY = Math.ceil(cy + outer);
+    const o2 = outer * outer;
+    const i2 = inner * inner;
+    for (let py = minY; py <= maxY; py += 1) {
+        for (let px = minX; px <= maxX; px += 1) {
+            const dx = px - cx;
+            const dy = py - cy;
+            const d2 = (dx * dx) + (dy * dy);
+            if (d2 <= o2 && d2 >= i2) {
+                setPixel(canvas, px, py, color);
+            }
+        }
+    }
+}
+
+function edgeSign(ax, ay, bx, by, cx, cy) {
+    return ((cx - ax) * (by - ay)) - ((cy - ay) * (bx - ax));
+}
+
+function fillTriangle(canvas, a, b, c, color) {
+    const minX = Math.floor(Math.min(a.x, b.x, c.x));
+    const maxX = Math.ceil(Math.max(a.x, b.x, c.x));
+    const minY = Math.floor(Math.min(a.y, b.y, c.y));
+    const maxY = Math.ceil(Math.max(a.y, b.y, c.y));
+    const area = edgeSign(a.x, a.y, b.x, b.y, c.x, c.y);
+    if (area === 0) return;
+    const positive = area > 0;
+    for (let py = minY; py <= maxY; py += 1) {
+        for (let px = minX; px <= maxX; px += 1) {
+            const x = px + 0.5;
+            const y = py + 0.5;
+            const w0 = edgeSign(b.x, b.y, c.x, c.y, x, y);
+            const w1 = edgeSign(c.x, c.y, a.x, a.y, x, y);
+            const w2 = edgeSign(a.x, a.y, b.x, b.y, x, y);
+            if ((positive && w0 >= 0 && w1 >= 0 && w2 >= 0) || (!positive && w0 <= 0 && w1 <= 0 && w2 <= 0)) {
+                setPixel(canvas, px, py, color);
+            }
+        }
+    }
+}
+
+function drawFilledConvexPolygon(canvas, points, color) {
+    if (points.length < 3) return;
+    const center = points.reduce((acc, p) => ({ x: acc.x + p.x, y: acc.y + p.y }), { x: 0, y: 0 });
+    center.x /= points.length;
+    center.y /= points.length;
+    for (let i = 0; i < points.length; i += 1) {
+        const a = points[i];
+        const b = points[(i + 1) % points.length];
+        fillTriangle(canvas, center, a, b, color);
+    }
+}
+
+function drawPolygonStroke(canvas, points, strokeWidth, color) {
+    for (let i = 0; i < points.length; i += 1) {
+        const a = points[i];
+        const b = points[(i + 1) % points.length];
+        drawLineWidth(canvas, a.x, a.y, b.x, b.y, strokeWidth, color);
+    }
+}
+
+function measureBitmapText(text, scale) {
+    const chars = String(text ?? '').toUpperCase().split('');
+    if (chars.length === 0) return { width: 0, height: 7 * scale };
+    const charWidth = 5 * scale;
+    const spacing = scale;
+    return {
+        width: (chars.length * charWidth) + ((chars.length - 1) * spacing),
+        height: 7 * scale,
+    };
+}
+
+function drawBitmapText(canvas, text, x, y, scale, color, align = 'left') {
+    const upper = String(text ?? '').toUpperCase();
+    const size = measureBitmapText(upper, scale);
+    let cursorX = x;
+    if (align === 'center') cursorX -= size.width / 2;
+    if (align === 'right') cursorX -= size.width;
+
+    const spacing = scale;
+    for (const char of upper) {
+        const glyph = PIXEL_FONT_5X7[char] ?? PIXEL_FONT_5X7[' '];
+        for (let row = 0; row < glyph.length; row += 1) {
+            for (let col = 0; col < glyph[row].length; col += 1) {
+                if (glyph[row][col] === '1') {
+                    drawFilledRect(canvas, cursorX + (col * scale), y + (row * scale), scale, scale, color);
+                }
+            }
+        }
+        cursorX += (5 * scale) + spacing;
+    }
+}
+
+function normalizeBitmapText(text) {
+    return String(text ?? '')
+        .toUpperCase()
+        .replace(/[^A-Z0-9 #:\-._]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function drawLabelBadgeRaster(canvas, {
+    x,
+    y,
+    text,
+    anchor = 'center',
+    scale = 2,
+    paddingX = 4,
+    paddingY = 3,
+    fillColor = [255, 255, 255, 245],
+    strokeColor = [17, 24, 39, 255],
+    textColor = [17, 24, 39, 255],
+}) {
+    const label = String(text ?? '').toUpperCase();
+    const textSize = measureBitmapText(label, scale);
+    const width = textSize.width + (paddingX * 2);
+    const height = textSize.height + (paddingY * 2);
+    let left = x - (width / 2);
+    if (anchor === 'start') left = x;
+    if (anchor === 'end') left = x - width;
+    const top = y - (height / 2);
+
+    drawFilledRect(canvas, left, top, width, height, fillColor);
+    drawRectStroke(canvas, left, top, width, height, 1, strokeColor);
+    drawBitmapText(canvas, label, left + paddingX, top + paddingY, scale, textColor, 'left');
+}
+
+function createCrc32Table() {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i += 1) {
+        let c = i;
+        for (let k = 0; k < 8; k += 1) {
+            c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        table[i] = c >>> 0;
+    }
+    return table;
+}
+
+const CRC32_TABLE = createCrc32Table();
+
+function crc32(buffer) {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < buffer.length; i += 1) {
+        crc = CRC32_TABLE[(crc ^ buffer[i]) & 0xFF] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function makePngChunk(type, data) {
+    const typeBuffer = Buffer.from(type, 'ascii');
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length, 0);
+    const crcValue = crc32(Buffer.concat([typeBuffer, data]));
+    const crcBuffer = Buffer.alloc(4);
+    crcBuffer.writeUInt32BE(crcValue, 0);
+    return Buffer.concat([length, typeBuffer, data, crcBuffer]);
+}
+
+function encodePng(canvas) {
+    const { width, height, pixels } = canvas;
+    const raw = Buffer.alloc((width * 4 + 1) * height);
+    for (let y = 0; y < height; y += 1) {
+        const rowStart = y * (width * 4 + 1);
+        raw[rowStart] = 0;
+        for (let x = 0; x < width; x += 1) {
+            const src = ((y * width) + x) * 4;
+            const dst = rowStart + 1 + (x * 4);
+            raw[dst] = pixels[src];
+            raw[dst + 1] = pixels[src + 1];
+            raw[dst + 2] = pixels[src + 2];
+            raw[dst + 3] = pixels[src + 3];
+        }
+    }
+
+    const compressed = zlib.deflateSync(raw, { level: 9 });
+    const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width, 0);
+    ihdr.writeUInt32BE(height, 4);
+    ihdr[8] = 8;
+    ihdr[9] = 6;
+    ihdr[10] = 0;
+    ihdr[11] = 0;
+    ihdr[12] = 0;
+
+    return Buffer.concat([
+        signature,
+        makePngChunk('IHDR', ihdr),
+        makePngChunk('IDAT', compressed),
+        makePngChunk('IEND', Buffer.alloc(0)),
+    ]);
+}
+
+function renderBoardPng(game, focusTarget = null) {
+    const geometry = buildBoardGeometry(game);
+    const bounds = getBoardBounds(geometry);
+    const padding = 170;
+    const scale = 2.15;
+    const legendWidth = 500;
+    const boardPixelWidth = Math.ceil((bounds.maxX - bounds.minX + (padding * 2)) * scale);
+    const boardPixelHeight = Math.ceil((bounds.maxY - bounds.minY + (padding * 2)) * scale);
+    const width = Math.max(1900, boardPixelWidth + legendWidth);
+    const height = Math.max(1200, boardPixelHeight);
+    const canvas = createRasterCanvas(width, height, '#f4efe6');
+    const panelX = width - legendWidth + 22;
+    const panelY = 24;
+    const panelWidth = legendWidth - 44;
+    const panelHeight = height - 48;
+    const boardCenter = {
+        x: (bounds.minX + bounds.maxX) / 2,
+        y: (bounds.minY + bounds.maxY) / 2,
+    };
+    const darkText = hexToRgba('#111827');
+    const panelBorder = hexToRgba('#cbd5e1');
+    const panelFill = [255, 255, 255, 245];
+
+    const toCanvas = point => ({
+        x: (point.x - bounds.minX + padding) * scale,
+        y: (point.y - bounds.minY + padding) * scale,
+    });
+
+    const toCanvasX = x => (x - bounds.minX + padding) * scale;
+    const toCanvasY = y => (y - bounds.minY + padding) * scale;
+    drawFilledRect(canvas, panelX, panelY, panelWidth, panelHeight, panelFill);
+    drawRectStroke(canvas, panelX, panelY, panelWidth, panelHeight, 2, panelBorder);
+
+    game.board.hexes
+        .slice()
+        .sort((a, b) => a.r - b.r || a.q - b.q)
+        .forEach(hex => {
+            const center = geometry.centers.get(hex.id);
+            const points = hex.vertexIds
+                .map((_, i) => polarVertex(center, geometry.radius - 2, i))
+                .map(toCanvas);
+            const fill = hexToRgba(RESOURCE_COLORS[hex.resource] ?? '#d1d5db');
+            const stroke = hex.id === game.board.robberHexId ? hexToRgba('#9f1239') : hexToRgba('#374151');
+            const strokeWidth = hex.id === game.board.robberHexId ? 4 : 2;
+            const cx = toCanvasX(center.x);
+            const cy = toCanvasY(center.y);
+
+            drawFilledConvexPolygon(canvas, points, fill);
+            drawPolygonStroke(canvas, points, strokeWidth, stroke);
+
+            drawBitmapText(canvas, hex.id, cx, cy - (38 * scale), 3, hexToRgba('#1f2937'), 'center');
+
+            if (hex.number !== null) {
+                drawFilledCircle(canvas, cx, cy + (2 * scale), 26 * scale, hexToRgba('#fff8db'));
+                drawCircleStroke(canvas, cx, cy + (2 * scale), 26 * scale, 2, hexToRgba('#92400e'));
+                drawBitmapText(
+                    canvas,
+                    String(hex.number),
+                    cx,
+                    cy - (7 * scale),
+                    4,
+                    hexToRgba('#111827'),
+                    'center'
+                );
+            }
+
+            if (hex.id === game.board.robberHexId) {
+                drawFilledCircle(canvas, cx, cy - (58 * scale), 10 * scale, hexToRgba('#7f1d1d'));
+                drawCircleStroke(canvas, cx, cy - (58 * scale), 10 * scale, 2, hexToRgba('#111827'));
+            }
+        });
+
+    sortIds(Object.keys(game.board.edges)).forEach(edgeId => {
+        const edge = getEdge(game, edgeId);
+        if (!edge) return;
+        const a = geometry.vertices.get(edge.vertexIds[0]);
+        const b = geometry.vertices.get(edge.vertexIds[1]);
+        if (!a || !b) return;
+
+        const ax = toCanvasX(a.x);
+        const ay = toCanvasY(a.y);
+        const bx = toCanvasX(b.x);
+        const by = toCanvasY(b.y);
+        const mx = (ax + bx) / 2;
+        const my = (ay + by) / 2;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const length = Math.max(Math.hypot(dx, dy), 1);
+        const nx = (-dy / length);
+        const ny = (dx / length);
+        const labelX = mx + (nx * 28);
+        const labelY = my + (ny * 28);
+        const ownerColor = edge.ownerId ? hexToRgba(getPlayerColor(game, edge.ownerId)) : [156, 163, 175, 180];
+        const focused = focusTarget?.type === 'edge' && focusTarget.id === edgeId;
+
+        if (focused) {
+            drawLineWidth(canvas, ax, ay, bx, by, 24, [239, 68, 68, 120]);
+        }
+
+        drawLineWidth(canvas, ax, ay, bx, by, edge.ownerId ? 12 : 4, ownerColor);
+        drawLabelBadgeRaster(canvas, {
+            x: labelX,
+            y: labelY,
+            text: edgeId,
+            scale: 3,
+            fillColor: focused ? [220, 38, 38, 255] : [255, 255, 255, 245],
+            strokeColor: focused ? [127, 29, 29, 255] : [17, 24, 39, 255],
+            textColor: focused ? [255, 255, 255, 255] : [17, 24, 39, 255],
+        });
+    });
+
+    sortIds(Object.keys(game.board.vertices)).forEach(vertexId => {
+        const vertex = getVertex(game, vertexId);
+        const point = geometry.vertices.get(vertexId);
+        if (!vertex || !point) return;
+
+        const x = toCanvasX(point.x);
+        const y = toCanvasY(point.y);
+        const dirX = point.x - boardCenter.x;
+        const dirY = point.y - boardCenter.y;
+        const dirLen = Math.max(Math.hypot(dirX, dirY), 1);
+        const labelX = x + ((dirX / dirLen) * 34);
+        const labelY = y + ((dirY / dirLen) * 34);
+        const focused = focusTarget?.type === 'vertex' && focusTarget.id === vertexId;
+
+        if (focused) {
+            drawCircleStroke(canvas, x, y, 28, 5, hexToRgba('#dc2626'));
+        }
+
+        if (vertex.building) {
+            const color = hexToRgba(getPlayerColor(game, vertex.building.ownerId));
+            if (vertex.building.type === 'city') {
+                drawFilledRect(canvas, x - 12, y - 12, 24, 24, color);
+                drawRectStroke(canvas, x - 12, y - 12, 24, 24, 2, hexToRgba('#111827'));
+            } else {
+                drawFilledCircle(canvas, x, y, 11, color);
+                drawCircleStroke(canvas, x, y, 11, 2, hexToRgba('#111827'));
+            }
+        } else {
+            drawFilledCircle(canvas, x, y, 4.5, hexToRgba('#1f2937'));
+        }
+
+        drawLabelBadgeRaster(canvas, {
+            x: labelX,
+            y: labelY,
+            text: vertexId,
+            scale: 3,
+            fillColor: focused ? [220, 38, 38, 255] : [255, 255, 255, 245],
+            strokeColor: focused ? [127, 29, 29, 255] : [17, 24, 39, 255],
+            textColor: focused ? [255, 255, 255, 255] : [17, 24, 39, 255],
+        });
+    });
+
+    const phaseText = normalizeBitmapText(game.phase.replaceAll('_', ' '));
+    const focusText = normalizeBitmapText(focusTarget ? focusTarget.id : 'NONE');
+    const robberText = normalizeBitmapText(game.board.robberHexId ?? '-');
+    const resourceLegend = [
+        ['WOOD', RESOURCE_COLORS.wood],
+        ['BRICK', RESOURCE_COLORS.brick],
+        ['WHEAT', RESOURCE_COLORS.wheat],
+        ['SHEEP', RESOURCE_COLORS.sheep],
+        ['ORE', RESOURCE_COLORS.ore],
+        ['DESERT', RESOURCE_COLORS.desert],
+    ];
+
+    let legendY = panelY + 24;
+    drawBitmapText(canvas, 'CATAN LEGEND', panelX + 18, legendY, 4, darkText);
+    legendY += 42;
+    drawBitmapText(canvas, `PHASE ${phaseText}`, panelX + 18, legendY, 2, darkText);
+    legendY += 24;
+    drawBitmapText(canvas, `FOCUS ${focusText}`, panelX + 18, legendY, 2, darkText);
+    legendY += 24;
+    drawBitmapText(canvas, `ROBBER ${robberText}`, panelX + 18, legendY, 2, darkText);
+    legendY += 34;
+    drawBitmapText(canvas, 'REGION COLORS', panelX + 18, legendY, 3, darkText);
+    legendY += 34;
+
+    resourceLegend.forEach(([name, colorHex]) => {
+        drawFilledRect(canvas, panelX + 20, legendY + 2, 24, 24, hexToRgba(colorHex));
+        drawRectStroke(canvas, panelX + 20, legendY + 2, 24, 24, 2, darkText);
+        drawBitmapText(canvas, name, panelX + 56, legendY + 6, 2, darkText);
+        legendY += 34;
+    });
+
+    drawFilledRect(canvas, panelX + 20, legendY + 2, 24, 24, hexToRgba('#7f1d1d'));
+    drawRectStroke(canvas, panelX + 20, legendY + 2, 24, 24, 2, darkText);
+    drawBitmapText(canvas, 'ROBBER TILE', panelX + 56, legendY + 6, 2, darkText);
+    legendY += 44;
+    drawBitmapText(canvas, 'PLAYERS', panelX + 18, legendY, 3, darkText);
+    legendY += 34;
+
+    game.players.forEach((player, index) => {
+        drawFilledRect(canvas, panelX + 20, legendY + 2, 24, 24, hexToRgba(getPlayerColor(game, player.id)));
+        drawRectStroke(canvas, panelX + 20, legendY + 2, 24, 24, 2, darkText);
+        const playerLabel = normalizeBitmapText(`P${index + 1} ${player.name}`).slice(0, 22);
+        drawBitmapText(canvas, playerLabel, panelX + 56, legendY + 6, 2, darkText);
+        legendY += 34;
+    });
+
+    return encodePng(canvas);
+}
+
 function renderHexRows(game) {
     const rows = [-2, -1, 0, 1, 2];
     const indent = { '-2': '      ', '-1': '   ', '0': '', '1': '   ', '2': '      ' };
@@ -1367,6 +1928,50 @@ function finalizeSetupOrder(game) {
     return true;
 }
 
+function processSetupOrderRoll(game, userId) {
+    const player = getPlayer(game, userId);
+    if (!player) {
+        return { error: 'You are not in this game.' };
+    }
+
+    if (game.setup.rolls[userId] !== null) {
+        return { error: 'You already rolled for setup order.' };
+    }
+
+    const total = rollDie() + rollDie();
+    game.setup.rolls[userId] = total;
+
+    const pending = game.players.filter(p => game.setup.rolls[p.id] === null);
+    if (pending.length > 0) {
+        return { message: `${player.name} rolled ${total}. Waiting for ${pending.map(p => p.name).join(', ')}.` };
+    }
+
+    if (!finalizeSetupOrder(game)) {
+        const values = Object.values(game.setup.rolls);
+        const tiedValue = values.find((v, i) => values.indexOf(v) !== i);
+        game.players.forEach(p => {
+            if (game.setup.rolls[p.id] === tiedValue) game.setup.rolls[p.id] = null;
+        });
+        return { message: `${player.name} rolled ${total}. Tie detected at ${tiedValue}. Tied players reroll with /catan roll or the roll button.` };
+    }
+
+    const orderText = game.setup.order.map(id => getPlayer(game, id)?.name ?? id).join(' -> ');
+    const next = setupAdvance(game);
+    return { message: `${player.name} rolled ${total}.\nTurn order: ${orderText}\n${next}` };
+}
+
+function createSetupRollButtons(guildId) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`catan_setup_roll:${guildId}`).setLabel('Roll Setup Order').setStyle(ButtonStyle.Primary)
+    );
+}
+
+function createTurnRollButtons(guildId) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`catan_turn_roll:${guildId}`).setLabel('Roll Turn Dice').setStyle(ButtonStyle.Primary)
+    );
+}
+
 async function handleStart(interaction, state, guildId) {
     const game = getGame(state, guildId);
     if (!game || game.phase !== PHASE.LOBBY) {
@@ -1380,7 +1985,10 @@ async function handleStart(interaction, state, guildId) {
 
     initializeStart(game);
     saveState(state);
-    await interaction.reply('Game started. Each player rolls once with /catan roll to determine first turn order.');
+    await interaction.reply({
+        content: 'Game started. Each player rolls once to determine first turn order. Use /catan roll or press the button below.',
+        components: [createSetupRollButtons(guildId)],
+    });
 }
 
 // --- Slash command handlers: turn actions ---
@@ -1392,41 +2000,20 @@ async function handleRoll(interaction, state, guildId, userId) {
     }
 
     if (game.phase === PHASE.SETUP_ORDER_ROLL) {
-        const player = getPlayer(game, userId);
-        if (!player) {
-            await interaction.reply('You are not in this game.');
+        const result = processSetupOrderRoll(game, userId);
+        if (result.error) {
+            await interaction.reply(result.error);
             return;
         }
-        if (game.setup.rolls[userId] !== null) {
-            await interaction.reply('You already rolled for setup order.');
-            return;
-        }
-
-        const total = rollDie() + rollDie();
-        game.setup.rolls[userId] = total;
-
-        const pending = game.players.filter(p => game.setup.rolls[p.id] === null);
-        if (pending.length > 0) {
-            saveState(state);
-            await interaction.reply(`You rolled ${total}. Waiting for ${pending.map(p => p.name).join(', ')}.`);
-            return;
-        }
-
-        if (!finalizeSetupOrder(game)) {
-            const values = Object.values(game.setup.rolls);
-            const tiedValue = values.find((v, i) => values.indexOf(v) !== i);
-            game.players.forEach(p => {
-                if (game.setup.rolls[p.id] === tiedValue) game.setup.rolls[p.id] = null;
-            });
-            saveState(state);
-            await interaction.reply(`Tie detected at ${tiedValue}. Tied players reroll with /catan roll.`);
-            return;
-        }
-
-        const orderText = game.setup.order.map(id => getPlayer(game, id)?.name ?? id).join(' -> ');
-        const next = setupAdvance(game);
         saveState(state);
-        await interaction.reply(`Turn order: ${orderText}\n${next}`);
+        if (game.phase === PHASE.TURN_ROLL) {
+            await interaction.reply({
+                content: `${result.message}\n${getPlayer(game, game.turn.currentPlayerId)?.name} can roll with the button below or /catan roll.`,
+                components: [createTurnRollButtons(guildId)],
+            });
+            return;
+        }
+        await interaction.reply(result.message);
         return;
     }
 
@@ -1435,10 +2022,19 @@ async function handleRoll(interaction, state, guildId, userId) {
         return;
     }
 
+    const result = processTurnRoll(game, userId);
+    if (result.error) {
+        await interaction.reply(result.error);
+        return;
+    }
+    saveState(state);
+    await interaction.reply(result.message);
+}
+
+function processTurnRoll(game, userId) {
     const turnError = validateTurnPlayer(game, userId);
     if (turnError) {
-        await interaction.reply(turnError);
-        return;
+        return { error: turnError };
     }
 
     const d1 = rollDie();
@@ -1451,23 +2047,20 @@ async function handleRoll(interaction, state, guildId, userId) {
         const discarded = autoDiscardOnSeven(game);
         game.phase = PHASE.ROBBER_MOVE;
         game.robberContext = { byPlayerId: userId, reason: 'roll_7' };
-        saveState(state);
 
         const discardLines = [...discarded.entries()]
             .map(([pid, map]) => `${getPlayer(game, pid)?.name}: ${resourceMapToString(map)}`)
             .join('\n') || 'No discards required.';
-        await interaction.reply(`Rolled 7. Discards applied:\n${discardLines}\nMove robber with /catan robber tile:<1-19> [target].`);
-        return;
+        return { message: `Rolled 7. Discards applied:\n${discardLines}\nMove robber with /catan robber tile:<1-19> [target].` };
     }
 
     const gains = distributeResourcesByRoll(game, total);
     game.phase = PHASE.TURN_ACTION;
-    saveState(state);
 
     const lines = game.players
         .map(player => `${player.name}: ${resourceMapToString(gains.get(player.id) ?? emptyResources())}`)
         .join('\n');
-    await interaction.reply(`Rolled ${d1}+${d2}=${total}. Production:\n${lines}`);
+    return { message: `Rolled ${d1}+${d2}=${total}. Production:\n${lines}` };
 }
 
 async function doPlace(interaction, state, guildId, userId, type, at) {
@@ -1591,7 +2184,7 @@ async function handleDevBuy(interaction, state, guildId, userId) {
 
     const player = currentPlayer(game);
     if (!canAfford(player.resources, COSTS.dev_buy)) {
-        await interaction.reply('Not enough resources. Need wheat 1, sheep 1, ore 1.');
+        await interaction.reply(`Not enough resources. Need ${costToString(COSTS.dev_buy)}.`);
         return;
     }
     if (game.devDeck.length === 0) {
@@ -1712,7 +2305,7 @@ async function handleDevPlay(interaction, state, guildId, userId) {
             await interaction.reply(`${winner.name} wins with ${getPlayerPoints(game, winner)} VP.`);
             return;
         }
-        await interaction.reply(`Year of Plenty played. Gained ${opts.resource} and ${opts.resource2}.`);
+        await interaction.reply(`Year of Plenty played. Gained ${resourceDisplayName(opts.resource)} and ${resourceDisplayName(opts.resource2)}.`);
         return;
     }
 
@@ -1739,7 +2332,7 @@ async function handleDevPlay(interaction, state, guildId, userId) {
             await interaction.reply(`${winner.name} wins with ${getPlayerPoints(game, winner)} VP.`);
             return;
         }
-        await interaction.reply(`Monopoly played on ${opts.resource}. Took ${taken}.`);
+        await interaction.reply(`Monopoly played on ${resourceDisplayName(opts.resource)}. Took ${taken}.`);
     }
 }
 
@@ -1822,14 +2415,14 @@ async function handleTradeBank(interaction, state, guildId, userId) {
 
     const player = currentPlayer(game);
     if (player.resources[give] < 4) {
-        await interaction.reply(`Need 4 ${give} for a bank trade.`);
+        await interaction.reply(`Need 4 ${resourceDisplayName(give)} for a bank trade.`);
         return;
     }
 
     player.resources[give] -= 4;
     player.resources[get] += 1;
     saveState(state);
-    await interaction.reply(`${player.name} traded 4 ${give} for 1 ${get}.`);
+    await interaction.reply(`${player.name} traded 4 ${resourceDisplayName(give)} for 1 ${resourceDisplayName(get)}.`);
 }
 
 async function handleTradePlayer(interaction, state, guildId, userId) {
@@ -1918,7 +2511,10 @@ async function handleEndTurn(interaction, state, guildId, userId) {
     game.phase = PHASE.TURN_ROLL;
 
     saveState(state);
-    await interaction.reply(`Turn ended. It is now ${getPlayer(game, game.turn.currentPlayerId)?.name}'s turn. Use /catan roll.`);
+    await interaction.reply({
+        content: `Turn ended. It is now ${getPlayer(game, game.turn.currentPlayerId)?.name}'s turn. Roll with the button below or /catan roll.`,
+        components: [createTurnRollButtons(guildId)],
+    });
 }
 
 // --- Slash command handlers: status and utility ---
@@ -2084,9 +2680,9 @@ async function handleBoard(interaction, state, guildId) {
         return;
     }
     try {
-        const svg = renderBoardSvg(game, focus.target);
-        const imageName = `catan-board-${guildId}.svg`;
-        const attachment = new AttachmentBuilder(Buffer.from(svg, 'utf8'), { name: imageName });
+        const png = renderBoardPng(game, focus.target);
+        const imageName = `catan-board-${guildId}.png`;
+        const attachment = new AttachmentBuilder(png, { name: imageName });
         const current = currentPlayer(game);
         const focusLine = focus.target ? `Focus: ${focus.target.id}` : 'Focus: none (use /catan board at:V12 or at:E34)';
 
@@ -2095,6 +2691,8 @@ async function handleBoard(interaction, state, guildId) {
                 `Catan board visual`,
                 `Phase: ${game.phase} | Round: ${game.turn?.round ?? '-'} | Current: ${current?.name ?? '-'} | Robber: ${game.board.robberHexId ?? '-'}`,
                 focusLine,
+                'Legend is included on the right side of the image (region colors, robber, players).',
+                `Resource emojis: ${resourceLegendLine(true)}`,
                 'Use /catan place type:settlement at:V12 or /catan place type:road at:E34',
             ].join('\n'),
             files: [attachment],
@@ -2179,9 +2777,85 @@ export async function handleCatanCommand(interaction) {
     }
 }
 
-// Handles trade accept/reject buttons for the active offer.
+async function handleSetupRollButton(interaction) {
+    const match = interaction.customId.match(/^catan_setup_roll:([^:]+)$/);
+    if (!match) {
+        await interaction.reply({ content: 'Invalid setup roll payload.', ephemeral: true });
+        return true;
+    }
+
+    const [, guildId] = match;
+    const state = loadState();
+    const game = getGame(state, guildId);
+    if (!game) {
+        await interaction.reply({ content: 'No game found.', ephemeral: true });
+        return true;
+    }
+
+    if (game.phase !== PHASE.SETUP_ORDER_ROLL) {
+        await interaction.reply({ content: 'Setup order roll is not active.', ephemeral: true });
+        return true;
+    }
+
+    const result = processSetupOrderRoll(game, interaction.user.id);
+    if (result.error) {
+        await interaction.reply({ content: result.error, ephemeral: true });
+        return true;
+    }
+
+    saveState(state);
+    if (game.phase === PHASE.TURN_ROLL) {
+        await interaction.reply({
+            content: `${result.message}\n${getPlayer(game, game.turn.currentPlayerId)?.name} can roll with the button below or /catan roll.`,
+            components: [createTurnRollButtons(guildId)],
+        });
+        return true;
+    }
+
+    await interaction.reply(result.message);
+    return true;
+}
+
+async function handleTurnRollButton(interaction) {
+    const match = interaction.customId.match(/^catan_turn_roll:([^:]+)$/);
+    if (!match) {
+        await interaction.reply({ content: 'Invalid turn roll payload.', ephemeral: true });
+        return true;
+    }
+
+    const [, guildId] = match;
+    const state = loadState();
+    const game = getGame(state, guildId);
+    if (!game) {
+        await interaction.reply({ content: 'No game found.', ephemeral: true });
+        return true;
+    }
+
+    if (game.phase !== PHASE.TURN_ROLL) {
+        await interaction.reply({ content: 'Turn roll is not active.', ephemeral: true });
+        return true;
+    }
+
+    const result = processTurnRoll(game, interaction.user.id);
+    if (result.error) {
+        await interaction.reply({ content: result.error, ephemeral: true });
+        return true;
+    }
+
+    saveState(state);
+    await interaction.reply(result.message);
+    return true;
+}
+
+// Handles catan button interactions (setup roll and trade flow).
 export async function handleCatanComponentInteraction(interaction) {
     if (!interaction.isButton()) return false;
+    if (interaction.customId.startsWith('catan_setup_roll:')) {
+        return handleSetupRollButton(interaction);
+    }
+    if (interaction.customId.startsWith('catan_turn_roll:')) {
+        return handleTurnRollButton(interaction);
+    }
     if (!interaction.customId.startsWith('catan_trade_')) return false;
 
     const match = interaction.customId.match(/^catan_trade_(accept|reject):([^:]+):(.+)$/);

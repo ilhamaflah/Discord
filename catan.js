@@ -1831,6 +1831,12 @@ function boardLegend(game) {
 }
 
 // --- Trade component builders ---
+function createLobbyJoinButtons(guildId) {
+    return new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`catan_lobby_join:${guildId}`).setLabel('Join Lobby').setStyle(ButtonStyle.Success)
+    );
+}
+
 function createTradeButtons(guildId, offerId) {
     return new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`catan_trade_accept:${guildId}:${offerId}`).setLabel('Accept').setStyle(ButtonStyle.Success),
@@ -1838,6 +1844,23 @@ function createTradeButtons(guildId, offerId) {
     );
 }
 // --- Slash command handlers: lobby/setup ---
+function joinLobbyForPlayer(state, guildId, userId, displayName) {
+    const game = getGame(state, guildId);
+    if (!game || game.phase !== PHASE.LOBBY) {
+        return { error: 'No open lobby. Create one with /catan create.' };
+    }
+    if (game.players.some(p => p.id === userId)) {
+        return { error: 'You are already in the lobby.' };
+    }
+    if (game.players.length >= 4) {
+        return { error: 'Lobby is full (2-4 players only).' };
+    }
+
+    game.players.push(createPlayer(userId, displayName));
+    saveState(state);
+    return { message: `${displayName} joined the lobby. (${game.players.length}/4)` };
+}
+
 async function handleCreate(interaction, state, guildId, userId, displayName) {
     const existing = getGame(state, guildId);
     if (existing && existing.phase !== PHASE.FINISHED) {
@@ -1846,26 +1869,19 @@ async function handleCreate(interaction, state, guildId, userId, displayName) {
     }
     setGame(state, guildId, createLobbyGame([createPlayer(userId, displayName)]));
     saveState(state);
-    await interaction.reply('Catan v2 lobby created. Others can join with /catan join (2-4 players).');
+    await interaction.reply({
+        content: 'Catan v2 lobby created. Others can join with /catan join or press Join Lobby below (2-4 players).',
+        components: [createLobbyJoinButtons(guildId)],
+    });
 }
 
 async function handleJoin(interaction, state, guildId, userId, displayName) {
-    const game = getGame(state, guildId);
-    if (!game || game.phase !== PHASE.LOBBY) {
-        await interaction.reply('No open lobby. Create one with /catan create.');
+    const result = joinLobbyForPlayer(state, guildId, userId, displayName);
+    if (result.error) {
+        await interaction.reply(result.error);
         return;
     }
-    if (game.players.some(p => p.id === userId)) {
-        await interaction.reply('You are already in the lobby.');
-        return;
-    }
-    if (game.players.length >= 4) {
-        await interaction.reply('Lobby is full (2-4 players only).');
-        return;
-    }
-    game.players.push(createPlayer(userId, displayName));
-    saveState(state);
-    await interaction.reply(`${displayName} joined the lobby. (${game.players.length}/4)`);
+    await interaction.reply(result.message);
 }
 
 async function handleLeave(interaction, state, guildId, userId, displayName) {
@@ -2113,6 +2129,14 @@ async function doPlace(interaction, state, guildId, userId, type, at) {
             game.setup.actionIndex += 1;
             const next = setupAdvance(game);
             saveState(state);
+            if (game.phase === PHASE.TURN_ROLL) {
+                const firstPlayer = getPlayer(game, game.turn?.currentPlayerId)?.name ?? 'First player';
+                await interaction.reply({
+                    content: `Road placed at ${at}. ${next}\n${firstPlayer} can roll with the button below or /catan roll.`,
+                    components: [createTurnRollButtons(guildId)],
+                });
+                return;
+            }
             await interaction.reply(`Road placed at ${at}. ${next}`);
             return;
         }
@@ -2847,9 +2871,32 @@ async function handleTurnRollButton(interaction) {
     return true;
 }
 
-// Handles catan button interactions (setup roll and trade flow).
+async function handleLobbyJoinButton(interaction) {
+    const match = interaction.customId.match(/^catan_lobby_join:([^:]+)$/);
+    if (!match) {
+        await interaction.reply({ content: 'Invalid lobby join payload.', ephemeral: true });
+        return true;
+    }
+
+    const [, guildId] = match;
+    const state = loadState();
+    const displayName = interaction.member?.displayName ?? interaction.user.username;
+    const result = joinLobbyForPlayer(state, guildId, interaction.user.id, displayName);
+    if (result.error) {
+        await interaction.reply({ content: result.error, ephemeral: true });
+        return true;
+    }
+
+    await interaction.reply(result.message);
+    return true;
+}
+
+// Handles catan button interactions (lobby, setup roll, turn roll, and trade flow).
 export async function handleCatanComponentInteraction(interaction) {
     if (!interaction.isButton()) return false;
+    if (interaction.customId.startsWith('catan_lobby_join:')) {
+        return handleLobbyJoinButton(interaction);
+    }
     if (interaction.customId.startsWith('catan_setup_roll:')) {
         return handleSetupRollButton(interaction);
     }

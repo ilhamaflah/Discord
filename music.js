@@ -189,17 +189,17 @@ function buildQueuePageComponents(guildId, userId, page, totalPages) {
     return [
         new ActionRowBuilder().addComponents(
             new ButtonBuilder()
-                .setCustomId(`music_queue_page:${guildId}:${userId}:${previousPage}`)
+                .setCustomId(`music_queue_page:${guildId}:${userId}:${previousPage}:prev`)
                 .setLabel('Previous')
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(page <= 1),
             new ButtonBuilder()
-                .setCustomId(`music_queue_page:${guildId}:${userId}:${page}`)
+                .setCustomId(`music_queue_label:${guildId}:${userId}:${page}`)
                 .setLabel(`Page ${page}/${totalPages}`)
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(true),
             new ButtonBuilder()
-                .setCustomId(`music_queue_page:${guildId}:${userId}:${nextPage}`)
+                .setCustomId(`music_queue_page:${guildId}:${userId}:${nextPage}:next`)
                 .setLabel('Next')
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(page >= totalPages),
@@ -791,14 +791,20 @@ async function handlePlayComponent(interaction) {
 }
 
 async function handleQueueComponent(interaction) {
-    const pageMatch = interaction.customId.match(/^music_queue_page:([^:]+):([^:]+):(\d+)$/);
-    if (!pageMatch) {
+    if (interaction.customId.startsWith('music_queue_label:')) {
+        return true;
+    }
+
+    const pageMatch = interaction.customId.match(/^music_queue_page:([^:]+):([^:]+):(\d+):(prev|next)$/);
+    const legacyMatch = interaction.customId.match(/^music_queue_page:([^:]+):([^:]+):(\d+)$/);
+    if (!pageMatch && !legacyMatch) {
         return false;
     }
 
-    const guildId = pageMatch[1];
-    const userId = pageMatch[2];
-    const requestedPage = Number.parseInt(pageMatch[3], 10);
+    const match = pageMatch ?? legacyMatch;
+    const guildId = match[1];
+    const userId = match[2];
+    const requestedPage = Number.parseInt(match[3], 10);
 
     if (interaction.guildId !== guildId || interaction.user.id !== userId) {
         await interaction.reply({

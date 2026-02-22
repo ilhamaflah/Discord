@@ -1,7 +1,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import { ActionRowBuilder, AttachmentBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 
 // --- Persistence and global constants ---
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -55,6 +55,13 @@ const DEV_DECK_TEMPLATE = [
     ...Array(2).fill('monopoly'),
     ...Array(5).fill('victory_point'),
 ];
+const DEV_CARD_COUNTS = {
+    knight: 14,
+    road_building: 2,
+    year_of_plenty: 2,
+    monopoly: 2,
+    victory_point: 5,
+};
 
 const RESOURCE_ICON = {
     wood: '🌲',
@@ -71,6 +78,15 @@ const BUILDING_ICON = {
 };
 
 const PLAYER_MARKERS = ['🔴', '🔵', '🟢', '🟡', '⚪'];
+const PLAYER_COLORS = ['#d94a4a', '#3b82f6', '#2fa36b', '#d4a619', '#9ca3af'];
+const RESOURCE_COLORS = {
+    wood: '#6f9c50',
+    brick: '#c9774f',
+    wheat: '#e2c468',
+    sheep: '#9acb72',
+    ore: '#9aa4b1',
+    desert: '#d8c3a0',
+};
 
 // --- Core data helpers ---
 function emptyResources() {
@@ -229,6 +245,43 @@ function addResources(resources, delta) {
 
 function resourceMapToString(map) {
     return RESOURCES.map(k => `${k} ${map[k] ?? 0}`).join(', ');
+}
+
+function costToString(costMap) {
+    return RESOURCES
+        .filter(resource => (costMap[resource] ?? 0) > 0)
+        .map(resource => `${resource} ${costMap[resource]}`)
+        .join(', ');
+}
+
+function getBuildCostLines() {
+    return [
+        'Build Costs:',
+        `Road: ${costToString(COSTS.road)}`,
+        `Settlement: ${costToString(COSTS.settlement)}`,
+        `City: ${costToString(COSTS.city)}`,
+        `Development card: ${costToString(COSTS.dev_buy)}`,
+    ];
+}
+
+function getDevCardGuideLines() {
+    return [
+        'Development Cards Guide:',
+        `Deck (25): knight ${DEV_CARD_COUNTS.knight}, road_building ${DEV_CARD_COUNTS.road_building}, year_of_plenty ${DEV_CARD_COUNTS.year_of_plenty}, monopoly ${DEV_CARD_COUNTS.monopoly}, victory_point ${DEV_CARD_COUNTS.victory_point}`,
+        '',
+        'General rules:',
+        `- Buy with /catan dev-buy (cost: ${costToString(COSTS.dev_buy)}).`,
+        '- Bought cards go to "Locked dev cards" and cannot be played this turn.',
+        '- Locked cards become playable after turn ends.',
+        '- /catan dev-play is only usable during your TURN_ACTION.',
+        '',
+        'Cards:',
+        '- knight: /catan dev-play card:knight -> starts robber move. Then use /catan robber tile:<1-19> [target]. Counts toward Largest Army.',
+        '- road_building: /catan dev-play card:road_building edge1:E12 edge2:E34 -> place 2 free legal roads.',
+        '- year_of_plenty: /catan dev-play card:year_of_plenty resource:wood resource2:ore -> gain 2 chosen resources.',
+        '- monopoly: /catan dev-play card:monopoly resource:wheat -> take all wheat from other players.',
+        '- victory_point: not playable with /catan dev-play. It gives +1 VP automatically while owned.',
+    ];
 }
 
 function devCardsToString(map) {
@@ -453,6 +506,23 @@ function buildBoardTopology() {
 
 function normalizeAt(value) {
     return value ? value.trim().toUpperCase() : null;
+}
+
+function resolveBoardFocusTarget(game, rawAt) {
+    const at = normalizeAt(rawAt);
+    if (!at) return { at: null, target: null, error: null };
+
+    if (/^V\d+$/.test(at)) {
+        if (!getVertex(game, at)) return { at, target: null, error: `Unknown vertex: ${at}.` };
+        return { at, target: { type: 'vertex', id: at }, error: null };
+    }
+
+    if (/^E\d+$/.test(at)) {
+        if (!getEdge(game, at)) return { at, target: null, error: `Unknown edge: ${at}.` };
+        return { at, target: { type: 'edge', id: at }, error: null };
+    }
+
+    return { at, target: null, error: 'Invalid focus coordinate. Use V# or E#, e.g. V12 or E34.' };
 }
 
 function validateTurnPlayer(game, userId) {
@@ -807,6 +877,302 @@ function formatHexCell(game, hex) {
     const token = hex.number === null ? '--' : String(hex.number).padStart(2, '0');
     const robber = hex.id === game.board.robberHexId ? '*' : ' ';
     return `${robber}${hex.id}${icon}${token}`;
+}
+
+function escapeXml(value) {
+    return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+}
+
+function polarVertex(center, radius, index) {
+    const angle = (((60 * index) - 30) * Math.PI) / 180;
+    return {
+        x: center.x + (radius * Math.cos(angle)),
+        y: center.y + (radius * Math.sin(angle)),
+    };
+}
+
+function getPlayerColor(game, playerId) {
+    const index = game.players.findIndex(player => player.id === playerId);
+    return PLAYER_COLORS[index] ?? PLAYER_COLORS[PLAYER_COLORS.length - 1];
+}
+
+function buildBoardGeometry(game) {
+    const radius = 82;
+    const sqrt3 = Math.sqrt(3);
+    const centers = new Map();
+    const vertexAccumulator = new Map();
+
+    game.board.hexes.forEach(hex => {
+        const center = {
+            x: radius * sqrt3 * (hex.q + (hex.r / 2)),
+            y: radius * 1.5 * hex.r,
+        };
+        centers.set(hex.id, center);
+
+        hex.vertexIds.forEach((vertexId, i) => {
+            const point = polarVertex(center, radius, i);
+            const acc = vertexAccumulator.get(vertexId) ?? { sumX: 0, sumY: 0, count: 0 };
+            acc.sumX += point.x;
+            acc.sumY += point.y;
+            acc.count += 1;
+            vertexAccumulator.set(vertexId, acc);
+        });
+    });
+
+    const vertices = new Map();
+    vertexAccumulator.forEach((acc, vertexId) => {
+        vertices.set(vertexId, {
+            x: acc.sumX / acc.count,
+            y: acc.sumY / acc.count,
+        });
+    });
+
+    return { radius, centers, vertices };
+}
+
+function getBoardBounds(geometry) {
+    const xs = [];
+    const ys = [];
+    geometry.centers.forEach(center => {
+        xs.push(center.x - geometry.radius, center.x + geometry.radius);
+        ys.push(center.y - geometry.radius, center.y + geometry.radius);
+    });
+    geometry.vertices.forEach(vertex => {
+        xs.push(vertex.x);
+        ys.push(vertex.y);
+    });
+
+    return {
+        minX: Math.min(...xs),
+        maxX: Math.max(...xs),
+        minY: Math.min(...ys),
+        maxY: Math.max(...ys),
+    };
+}
+
+function placementLegendLines(game) {
+    return game.players.map(player => {
+        const vp = getPlayerPoints(game, player);
+        const longestRoad = game.awards.longestRoadOwnerId === player.id ? ' LR' : '';
+        const largestArmy = game.awards.largestArmyOwnerId === player.id ? ' LA' : '';
+        return `${player.name}: ${vp} VP (${player.settlements.length}S/${player.cities.length}C/${player.roads.length}R)${longestRoad}${largestArmy}`;
+    });
+}
+
+function textWidthEstimate(text, fontSize) {
+    return String(text ?? '').length * fontSize * 0.62;
+}
+
+function pushLabelBadge(lines, {
+    x,
+    y,
+    text,
+    anchor = 'middle',
+    fontSize = 12,
+    paddingX = 5,
+    paddingY = 3,
+    fill = '#ffffff',
+    stroke = '#111827',
+    textFill = '#111827',
+    strokeWidth = 1.5,
+    opacity = 0.96,
+}) {
+    const width = textWidthEstimate(text, fontSize) + (paddingX * 2);
+    const height = fontSize + (paddingY * 2);
+    let left = x - (width / 2);
+    if (anchor === 'start') left = x;
+    if (anchor === 'end') left = x - width;
+    const top = y - (height / 2);
+
+    lines.push(
+        `<rect x="${left.toFixed(1)}" y="${top.toFixed(1)}" width="${width.toFixed(1)}" height="${height.toFixed(1)}" rx="5" fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${opacity}"/>`
+    );
+    lines.push(
+        `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="${anchor}" dominant-baseline="middle" style="font:700 ${fontSize}px Arial,sans-serif;fill:${textFill}">${escapeXml(text)}</text>`
+    );
+}
+
+function renderBoardSvg(game, focusTarget = null) {
+    const geometry = buildBoardGeometry(game);
+    const bounds = getBoardBounds(geometry);
+    const paddingX = 120;
+    const paddingY = 100;
+    const legendWidth = 520;
+    const boardWidth = (bounds.maxX - bounds.minX) + (paddingX * 2);
+    const boardHeight = (bounds.maxY - bounds.minY) + (paddingY * 2);
+    const width = Math.ceil(boardWidth + legendWidth);
+    const height = Math.ceil(Math.max(boardHeight, 900));
+    const boardOffsetX = paddingX - bounds.minX;
+    const boardOffsetY = ((height - boardHeight) / 2) + paddingY - bounds.minY;
+    const legendX = Math.floor(boardWidth + 30);
+
+    const toCanvasX = x => x + boardOffsetX;
+    const toCanvasY = y => y + boardOffsetY;
+    const lines = [];
+    const pointFmt = point => `${toCanvasX(point.x).toFixed(1)},${toCanvasY(point.y).toFixed(1)}`;
+    const current = currentPlayer(game);
+    const boardCenter = {
+        x: (bounds.minX + bounds.maxX) / 2,
+        y: (bounds.minY + bounds.maxY) / 2,
+    };
+    const robberHex = game.board.hexes.find(hex => hex.id === game.board.robberHexId) ?? null;
+    const robberLabel = robberHex ? `${robberHex.id} (${robberHex.resource}${robberHex.number ? ` ${robberHex.number}` : ''})` : '-';
+    const focusLabel = focusTarget ? `${focusTarget.type === 'vertex' ? 'Vertex' : 'Edge'} ${focusTarget.id}` : 'none';
+
+    lines.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`);
+    lines.push('<defs>');
+    lines.push('<style>');
+    lines.push('.tile-id{font:600 16px Arial,sans-serif;fill:#1f2937}');
+    lines.push('.tile-num{font:700 22px Arial,sans-serif;fill:#111827}');
+    lines.push('.small{font:600 12px Arial,sans-serif;fill:#111827}');
+    lines.push('.legend{font:600 14px Arial,sans-serif;fill:#111827}');
+    lines.push('.legend-title{font:700 22px Arial,sans-serif;fill:#111827}');
+    lines.push('</style>');
+    lines.push('</defs>');
+    lines.push(`<rect x="0" y="0" width="${width}" height="${height}" fill="#f4efe6"/>`);
+    lines.push(`<rect x="${legendX}" y="24" width="${legendWidth - 42}" height="${height - 48}" rx="14" fill="#ffffff" stroke="#d1d5db" stroke-width="2"/>`);
+
+    game.board.hexes
+        .slice()
+        .sort((a, b) => a.r - b.r || a.q - b.q)
+        .forEach(hex => {
+            const center = geometry.centers.get(hex.id);
+            const polygon = hex.vertexIds
+                .map((_, i) => polarVertex(center, geometry.radius - 2, i))
+                .map(pointFmt)
+                .join(' ');
+            const fill = RESOURCE_COLORS[hex.resource] ?? '#d1d5db';
+            const robberStroke = hex.id === game.board.robberHexId ? '#9f1239' : '#374151';
+            const robberStrokeWidth = hex.id === game.board.robberHexId ? 5 : 2;
+            const cx = toCanvasX(center.x);
+            const cy = toCanvasY(center.y);
+
+            lines.push(`<polygon points="${polygon}" fill="${fill}" stroke="${robberStroke}" stroke-width="${robberStrokeWidth}"/>`);
+            lines.push(`<text x="${cx}" y="${cy - 30}" text-anchor="middle" class="tile-id">${escapeXml(hex.id)}</text>`);
+            if (hex.number !== null) {
+                lines.push(`<circle cx="${cx}" cy="${cy + 2}" r="24" fill="#fff8db" stroke="#92400e" stroke-width="2"/>`);
+                lines.push(`<text x="${cx}" y="${cy + 10}" text-anchor="middle" class="tile-num">${hex.number}</text>`);
+            }
+            if (hex.id === game.board.robberHexId) {
+                lines.push(`<circle cx="${cx}" cy="${cy - 58}" r="10" fill="#7f1d1d" stroke="#111827" stroke-width="2"/>`);
+            }
+        });
+
+    sortIds(Object.keys(game.board.edges)).forEach(edgeId => {
+        const edge = getEdge(game, edgeId);
+        if (!edge) return;
+        const a = geometry.vertices.get(edge.vertexIds[0]);
+        const b = geometry.vertices.get(edge.vertexIds[1]);
+        if (!a || !b) return;
+
+        const ax = toCanvasX(a.x);
+        const ay = toCanvasY(a.y);
+        const bx = toCanvasX(b.x);
+        const by = toCanvasY(b.y);
+        const mx = (ax + bx) / 2;
+        const my = (ay + by) / 2;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const length = Math.max(Math.hypot(dx, dy), 1);
+        const nx = (-dy / length);
+        const ny = (dx / length);
+        const labelX = mx + (nx * 14);
+        const labelY = my + (ny * 14);
+        const ownerColor = edge.ownerId ? getPlayerColor(game, edge.ownerId) : '#9ca3af';
+        const ownerWidth = edge.ownerId ? 10 : 3;
+        const ownerOpacity = edge.ownerId ? '1' : '0.55';
+        const focused = focusTarget?.type === 'edge' && focusTarget.id === edgeId;
+
+        if (focused) {
+            lines.push(`<line x1="${ax.toFixed(1)}" y1="${ay.toFixed(1)}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}" stroke="#ef4444" stroke-width="18" stroke-linecap="round" opacity="0.45"/>`);
+        }
+
+        lines.push(`<line x1="${ax.toFixed(1)}" y1="${ay.toFixed(1)}" x2="${bx.toFixed(1)}" y2="${by.toFixed(1)}" stroke="${ownerColor}" stroke-width="${ownerWidth}" stroke-linecap="round" opacity="${ownerOpacity}"/>`);
+        pushLabelBadge(lines, {
+            x: labelX,
+            y: labelY,
+            text: edgeId,
+            fontSize: 12,
+            fill: focused ? '#dc2626' : '#ffffff',
+            stroke: focused ? '#7f1d1d' : '#111827',
+            textFill: focused ? '#ffffff' : '#111827',
+            opacity: focused ? 1 : 0.95,
+        });
+    });
+
+    sortIds(Object.keys(game.board.vertices)).forEach(vertexId => {
+        const vertex = getVertex(game, vertexId);
+        const point = geometry.vertices.get(vertexId);
+        if (!vertex || !point) return;
+        const x = toCanvasX(point.x);
+        const y = toCanvasY(point.y);
+        const dirX = point.x - boardCenter.x;
+        const dirY = point.y - boardCenter.y;
+        const dirLen = Math.max(Math.hypot(dirX, dirY), 1);
+        const labelX = x + ((dirX / dirLen) * 16);
+        const labelY = y + ((dirY / dirLen) * 16);
+        const focused = focusTarget?.type === 'vertex' && focusTarget.id === vertexId;
+
+        if (focused) {
+            lines.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="20" fill="none" stroke="#dc2626" stroke-width="4"/>`);
+        }
+
+        if (vertex.building) {
+            const color = getPlayerColor(game, vertex.building.ownerId);
+            if (vertex.building.type === 'city') {
+                lines.push(`<rect x="${(x - 10).toFixed(1)}" y="${(y - 10).toFixed(1)}" width="20" height="20" rx="2" fill="${color}" stroke="#111827" stroke-width="2"/>`);
+            } else {
+                lines.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="9" fill="${color}" stroke="#111827" stroke-width="2"/>`);
+            }
+        } else {
+            lines.push(`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.5" fill="#1f2937"/>`);
+        }
+
+        pushLabelBadge(lines, {
+            x: labelX,
+            y: labelY,
+            text: vertexId,
+            fontSize: 12,
+            fill: focused ? '#dc2626' : '#ffffff',
+            stroke: focused ? '#7f1d1d' : '#111827',
+            textFill: focused ? '#ffffff' : '#111827',
+            opacity: focused ? 1 : 0.95,
+        });
+    });
+
+    lines.push(`<text x="${legendX + 24}" y="60" class="legend-title">Catan Board</text>`);
+    lines.push(`<text x="${legendX + 24}" y="90" class="legend">Phase: ${escapeXml(game.phase)}</text>`);
+    lines.push(`<text x="${legendX + 24}" y="115" class="legend">Round: ${escapeXml(game.turn?.round ?? '-')}</text>`);
+    lines.push(`<text x="${legendX + 24}" y="140" class="legend">Current: ${escapeXml(current?.name ?? '-')}</text>`);
+    lines.push(`<text x="${legendX + 24}" y="165" class="legend">Robber: ${escapeXml(robberLabel)}</text>`);
+    lines.push(`<text x="${legendX + 24}" y="190" class="legend">Focus: ${escapeXml(focusLabel)}</text>`);
+    lines.push(`<text x="${legendX + 24}" y="215" class="legend">Placement: settlement/city => V#, road => E#</text>`);
+
+    let legendY = 250;
+    placementLegendLines(game).forEach((line, i) => {
+        const player = game.players[i];
+        const color = getPlayerColor(game, player.id);
+        lines.push(`<rect x="${legendX + 24}" y="${legendY - 12}" width="14" height="14" fill="${color}" stroke="#111827" stroke-width="1"/>`);
+        lines.push(`<text x="${legendX + 45}" y="${legendY}" class="legend">${escapeXml(line)}</text>`);
+        legendY += 28;
+    });
+
+    legendY += 6;
+    lines.push(`<text x="${legendX + 24}" y="${legendY}" class="small">Resource Colors</text>`);
+    legendY += 22;
+    Object.keys(RESOURCE_COLORS).forEach(resource => {
+        lines.push(`<rect x="${legendX + 24}" y="${legendY - 12}" width="14" height="14" fill="${RESOURCE_COLORS[resource]}" stroke="#111827" stroke-width="1"/>`);
+        lines.push(`<text x="${legendX + 45}" y="${legendY}" class="legend">${escapeXml(resource)}</text>`);
+        legendY += 22;
+    });
+
+    lines.push('</svg>');
+    return lines.join('');
 }
 
 function renderHexRows(game) {
@@ -1240,7 +1606,10 @@ async function handleDevBuy(interaction, state, guildId, userId) {
     const winner = maybeFinishGame(game);
     saveState(state);
 
-    await interaction.reply({ content: `You bought a development card: ${card}. It cannot be played this turn.`, ephemeral: true });
+    await interaction.reply({
+        content: `You bought a development card: ${card}. It cannot be played this turn.\nUse /catan dev-cards to see effects and timing.`,
+        ephemeral: true,
+    });
     if (winner) {
         await interaction.followUp(`${winner.name} wins with ${getPlayerPoints(game, winner)} VP.`);
     }
@@ -1708,12 +2077,37 @@ async function handleBoard(interaction, state, guildId) {
         await interaction.reply('Board not available yet. Start game with /catan start.');
         return;
     }
-    const chunks = splitLongText(boardLegend(game), 1800);
-    const first = chunks[0] || 'Board unavailable.';
-    await interaction.reply(`\`\`\`\n${first}\n\`\`\``);
+    const focusRequest = interaction.options.getString('at', false);
+    const focus = resolveBoardFocusTarget(game, focusRequest);
+    if (focus.error) {
+        await interaction.reply(focus.error);
+        return;
+    }
+    try {
+        const svg = renderBoardSvg(game, focus.target);
+        const imageName = `catan-board-${guildId}.svg`;
+        const attachment = new AttachmentBuilder(Buffer.from(svg, 'utf8'), { name: imageName });
+        const current = currentPlayer(game);
+        const focusLine = focus.target ? `Focus: ${focus.target.id}` : 'Focus: none (use /catan board at:V12 or at:E34)';
 
-    for (let i = 1; i < chunks.length; i += 1) {
-        await interaction.followUp(`\`\`\`\n${chunks[i]}\n\`\`\``);
+        await interaction.reply({
+            content: [
+                `Catan board visual`,
+                `Phase: ${game.phase} | Round: ${game.turn?.round ?? '-'} | Current: ${current?.name ?? '-'} | Robber: ${game.board.robberHexId ?? '-'}`,
+                focusLine,
+                'Use /catan place type:settlement at:V12 or /catan place type:road at:E34',
+            ].join('\n'),
+            files: [attachment],
+        });
+    } catch (error) {
+        console.error('Failed to render board image. Falling back to text board.', error);
+        const chunks = splitLongText(boardLegend(game), 1800);
+        const first = chunks[0] || 'Board unavailable.';
+        await interaction.reply(`\`\`\`\n${first}\n\`\`\``);
+
+        for (let i = 1; i < chunks.length; i += 1) {
+            await interaction.followUp(`\`\`\`\n${chunks[i]}\n\`\`\``);
+        }
     }
 }
 
@@ -1735,9 +2129,21 @@ async function handleHand(interaction, state, guildId, userId) {
             `Resources: ${resourceMapToString(player.resources)}`,
             `Playable dev cards: ${devCardsToString(player.devCards)}`,
             `Locked dev cards: ${devCardsToString(player.lockedDevCards)}`,
+            '',
+            ...getBuildCostLines(),
+            'Tip: use /catan costs any time.',
+            'Tip: use /catan dev-cards for dev card effects and timing.',
         ].join('\n'),
         ephemeral: true,
     });
+}
+
+async function handleCosts(interaction) {
+    await interaction.reply([...getBuildCostLines(), 'Tip: use /catan dev-cards for development card details.'].join('\n'));
+}
+
+async function handleDevCards(interaction) {
+    await interaction.reply(getDevCardGuideLines().join('\n'));
 }
 
 // --- Public catan command/component dispatchers ---
@@ -1761,10 +2167,12 @@ export async function handleCatanCommand(interaction) {
         case 'trade-player': await handleTradePlayer(interaction, state, guildId, userId); return;
         case 'dev-buy': await handleDevBuy(interaction, state, guildId, userId); return;
         case 'dev-play': await handleDevPlay(interaction, state, guildId, userId); return;
+        case 'dev-cards': await handleDevCards(interaction); return;
         case 'robber': await handleRobber(interaction, state, guildId, userId); return;
         case 'endturn': await handleEndTurn(interaction, state, guildId, userId); return;
         case 'setup-status': await handleSetupStatus(interaction, state, guildId); return;
         case 'status': await handleStatus(interaction, state, guildId); return;
+        case 'costs': await handleCosts(interaction); return;
         case 'board': await handleBoard(interaction, state, guildId); return;
         case 'hand': await handleHand(interaction, state, guildId, userId); return;
         default: await interaction.reply('Unknown catan subcommand.');

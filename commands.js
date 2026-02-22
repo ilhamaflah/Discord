@@ -235,6 +235,11 @@ export const commands = [
             },
             {
                 type: 1,
+                name: 'dev-cards',
+                description: 'Show development card effects and when they can be used',
+            },
+            {
+                type: 1,
                 name: 'robber',
                 description: 'Move robber and optionally steal',
                 options: [
@@ -271,8 +276,21 @@ export const commands = [
             },
             {
                 type: 1,
+                name: 'costs',
+                description: 'Show build and development card costs',
+            },
+            {
+                type: 1,
                 name: 'board',
                 description: 'Show board coordinates and ownership',
+                options: [
+                    {
+                        name: 'at',
+                        description: 'Optional focus coordinate, e.g. V12 or E34',
+                        type: 3,
+                        required: false,
+                    },
+                ],
             },
             {
                 type: 1,
